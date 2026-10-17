@@ -2,3 +2,7 @@
 dist/
 *.log
 .DS_Store
+
+# 浏览器测试截图产物
+shoot_scene.png
+death_screen.png
