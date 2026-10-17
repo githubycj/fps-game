@@ -48,4 +48,8 @@ export const sfx = {
   respawn() { blip('sine', 400, 950, 0.28, 0.09, 3200); },
   pickup()  { blip('square', 900, 1400, 0.12, 0.14, 4000); blip('sine', 1200, 1800, 0.1, 0.1, 5000); },
   heal()    { blip('sine', 500, 1200, 0.3, 0.12, 3500); },
+  // 换弹：两声机械音（卸弹匣 + 上膛）
+  reload()  { blip('square', 320, 210, 0.06, 0.08, 1500); setTimeout(() => blip('square', 230, 360, 0.08, 0.07, 1400), 90); },
+  switchWeapon() { blip('sine', 760, 520, 0.07, 0.06, 2400); },
+  dryFire() { blip('square', 170, 90, 0.05, 0.09, 900); },
 };

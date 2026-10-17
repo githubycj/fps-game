@@ -231,6 +231,7 @@ function snapshot(p) {
     yaw: p.yaw, pitch: p.pitch,
     hp: p.hp, alive: p.alive,
     weapon: p.weapon,
+    grounded: !!p.grounded,
     ammo: { mag: a.mag, reserve: a.reserve === Infinity ? -1 : a.reserve },
     owned: p.owned ? Object.keys(p.owned) : ['pistol'],
     reloadUntil: p.reloadUntil || 0,

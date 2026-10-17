@@ -45,9 +45,22 @@
       <span id="hpNum">100</span>
     </div>
 
-    <div id="hint">WASD 移动 · 空格 跳跃 · 左键 射击 · 右键 瞄准</div>
+    <div id="hint">WASD 移动 · 空格 跳跃 · 左键 射击 · 右键 瞄准 · R 换弹 · 1~5/滚轮 换枪</div>
     <div id="weapon">手枪</div>
     <div id="speedBadge" class="hidden">加速中</div>
+
+    <!-- 弹药 / 换弹 / 武器栏 -->
+    <div id="ammoWrap">
+      <div id="ammoLine">
+        <span id="ammoMag">12</span><span id="ammoSep">/</span><span id="ammoReserve">∞</span>
+      </div>
+      <div id="reloadWrap" class="hidden">
+        <span class="reload-label">换弹</span>
+        <div class="reload-bar"><i id="reloadFill"></i></div>
+      </div>
+    </div>
+    <div id="weaponSlots"></div>
+
     <div id="crosshair"></div>
     <div id="hitmarker" class="hidden"></div>
     <div id="flash" class="hidden"></div>

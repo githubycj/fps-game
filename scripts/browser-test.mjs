@@ -7,6 +7,11 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
+import { weaponOf, shotDamage } from '../shared/weapons.js';
+
+const PISTOL = weaponOf('pistol');
+const DUEL_DIST = 12;   // 近距离对决：手枪无衰减射程内，腰射散布可控
+const HEAD_DMG = shotDamage(PISTOL, { part: 'head', dist: DUEL_DIST });
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const shotDir = process.env.SHOT_DIR || root;
@@ -138,10 +143,10 @@ try {
   await A.keyboard.up('KeyW');
   check('跳跃登上中央擂台', onArena);
 
-  // 爆头验证：A 瞄准 B 头部，一枪掉 45（A 置前避免后台节流影响开火）
+  // 爆头验证：A 瞄准 B 头部，一枪掉手枪爆头伤害（A 置前避免后台节流影响开火）
   await A.bringToFront();
-  await teleportTo(A, 'Alpha', -25, 7);
-  await teleportTo(B, 'Beta', 25, 7);
+  await teleportTo(A, 'Alpha', -DUEL_DIST / 2, 7);
+  await teleportTo(B, 'Beta', DUEL_DIST / 2, 7);
   const pb = await readPlayer(B);
   await A.evaluate(() => { window.__game.local.locked = true; window.__game.shotsFired = 0; });
   await A.evaluate((t) => {
@@ -156,15 +161,23 @@ try {
   await A.mouse.up();
   await sleep(600);
   const afterHead = await readPlayer(B);
-  check('爆头一枪掉 45（B hp=55）', afterHead && afterHead.hp === 55);
+  check(`爆头一枪掉 ${HEAD_DMG}（B hp=${100 - HEAD_DMG}）`, afterHead && afterHead.hp === 100 - HEAD_DMG);
 
-  // 击杀：再补几枪 → B 死亡界面 → 重生
+  // 击杀：开镜补几枪（ADS 收紧散布，结果稳定） → B 死亡界面 → 重生
+  await A.mouse.down({ button: 'right' });
+  await A.waitForTimeout(120);
   for (let i = 0; i < 5; i++) {
     await A.mouse.down();
     await A.waitForTimeout(200);
     await A.mouse.up();
     await A.waitForTimeout(200);
+    if (process.env.SHOOT_DEBUG) {
+      console.log('[dbg] shot', i, 'A =', JSON.stringify(await readPlayer(A)), 'B hp =', (await readPlayer(B)).hp);
+    }
+    // 击倒即停：避免 B 重生后继续开火，导致后续断言读到中间态
+    if (await A.evaluate(() => window.__game.killCount || 0) >= 1) break;
   }
+  await A.mouse.up({ button: 'right' });
   const shots = await A.evaluate(() => window.__game.shotsFired || 0);
   const kills = await A.evaluate(() => window.__game.killCount || 0);
   console.log('[info] 补枪: shots =', shots, '| kills =', kills, '| B =', JSON.stringify(await readPlayer(B)));
