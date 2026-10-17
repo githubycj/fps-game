@@ -3,8 +3,15 @@ import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
-import { WORLD, TERRAIN, SPAWNS, BOTS, WEAPONS, stepPlayerPhysics, circleOverlapsBox } from '../shared/map.js';
-import { createPlayer, createBot, handleShoot, updatePlayer, aiUpdate, canSee, snapshot, spawnItem, applyItem, items, players } from '../server/server.js';
+import { WORLD, TERRAIN, SPAWNS, BOTS, stepPlayerPhysics, circleOverlapsBox } from '../shared/map.js';
+import { WEAPONS, weaponOf, shotDamage, STARTING_WEAPONS } from '../shared/weapons.js';
+import {
+  createPlayer, createBot, handleShoot, updatePlayer, aiUpdate, canSee, snapshot,
+  spawnItem, applyItem, items, players, startReload, switchWeapon, grantWeapon, ammoOf,
+} from '../server/server.js';
+
+const PISTOL = weaponOf('pistol');
+const RIFLE = weaponOf('ak47');
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 4000 + Math.floor(Math.random() * 500);
@@ -103,25 +110,27 @@ console.log('== 单元测试：战斗逻辑 ==');
   const wa = fakeWs(), wb = fakeWs();
   const a = createPlayer(wa, 'A');
   const b = createPlayer(wb, 'B');
-  a.x = -25; a.z = 7; b.x = 25; b.z = 7;
+  a.x = -10; a.z = 7; b.x = 10; b.z = 7;   // 20m：处于手枪无衰减射程内
 
   const dx = b.x - a.x, dy = (b.y + WORLD.bodyY) - (a.y + WORLD.eyeHeight), dz = b.z - a.z;
   const dist = Math.hypot(dx, dy, dz);
   const yaw = Math.atan2(-dx, -dz);
   const pitch = Math.asin(dy / dist);
+  const bodyDmg = shotDamage(PISTOL, { part: 'body', dist });
+  const headDmg = shotDamage(PISTOL, { part: 'head', dist });
 
   handleShoot(a, { yaw, pitch });
-  check('身体命中掉 20', b.hp === WORLD.maxHp - WORLD.damage);
-  check('hit 消息带 body 与命中点', wa.sent.some((m) => m.t === 'hit' && m.part === 'body' && m.dmg === WORLD.damage && typeof m.x === 'number'));
+  check(`身体命中掉 ${bodyDmg}（手枪基础伤害）`, b.hp === WORLD.maxHp - bodyDmg);
+  check('hit 消息带 body 与命中点', wa.sent.some((m) => m.t === 'hit' && m.part === 'body' && m.dmg === bodyDmg && typeof m.x === 'number'));
 
   const dyHead = (b.y + WORLD.headY) - (a.y + WORLD.eyeHeight);
   const headPitch = Math.asin(dyHead / Math.hypot(dx, dyHead, dz));
-  a.lastFire = 0;
+  a.lastFire = 0; a.burst = 0;
   handleShoot(a, { yaw, pitch: headPitch });
-  check('爆头掉 45（part=head）', b.hp === WORLD.maxHp - WORLD.damage - Math.round(WORLD.damage * WORLD.headshotMult));
+  check(`爆头掉 ${headDmg}（part=head）`, b.hp === WORLD.maxHp - bodyDmg - headDmg);
 
   b.hp = WORLD.maxHp;
-  for (let i = 0; i < 5; i++) { a.lastFire = 0; handleShoot(a, { yaw, pitch }); }
+  for (let i = 0; i < 5; i++) { a.lastFire = 0; a.burst = 0; handleShoot(a, { yaw, pitch }); }
   check('5 枪身体击倒（血量归零）', b.hp === 0 && !b.alive);
   check('广播 death 事件', wa.sent.some((m) => m.t === 'death' && m.id === b.id && m.killerId === a.id));
 
@@ -205,9 +214,10 @@ console.log('== 单元测试：AI 对手 ==');
   const dx = pl2.x - bot2.x, dz = pl2.z - bot2.z;
   const dy = (pl2.y + WORLD.bodyY) - (bot2.y + WORLD.eyeHeight);
   const d = Math.hypot(dx, dy, dz);
-  bot2.lastFire = 0;
+  bot2.lastFire = 0; bot2.burst = 0;
   handleShoot(bot2, { yaw: Math.atan2(-dx, -dz), pitch: Math.asin(dy / d) });
-  check('敌军 AI 能射击命中真人（伤害减半）', pl2.hp === WORLD.maxHp - Math.round(WORLD.damage * BOTS.damageMult));
+  const botDmg = Math.max(1, Math.round(shotDamage(PISTOL, { part: 'body', dist: d }) * BOTS.damageMult));
+  check(`敌军 AI 能射击命中真人（伤害减半 = ${botDmg}）`, pl2.hp === WORLD.maxHp - botDmg);
   players.delete(bot2.id); players.delete(pl2.id);
 }
 
@@ -241,6 +251,7 @@ console.log('== 单元测试：地面道具与武器 ==');
   const tgDy = (tg.y + WORLD.bodyY) - (pl.y + WORLD.eyeHeight);
   const tgPitch = Math.asin(tgDy / Math.hypot(20, tgDy, 0));
   pl.weapon = 'ak47';
+  pl.swapUntil = 0;   // 跳过拾取后的切枪硬直
   pl.lastFire = Date.now() - 100;
   handleShoot(pl, { yaw: tgYaw, pitch: tgPitch });
   const akAccepted = (Date.now() - pl.lastFire) < 90;
@@ -253,6 +264,83 @@ console.log('== 单元测试：地面道具与武器 ==');
 
   players.delete(pl.id); players.delete(tg.id);
   for (const id of [...items.keys()]) items.delete(id);
+}
+
+// ---------- 单元测试：武器系统（弹药 / 换弹 / 切枪 / 衰减 / 霰弹） ----------
+console.log('== 单元测试：武器系统 ==');
+{
+  const ws = fakeWs();
+  const p = createPlayer(ws, 'WPN');
+  const t = createPlayer(fakeWs(), 'TGT');
+  p.x = 0; p.z = 0; p.y = 0;
+  t.x = 8; t.z = 0; t.y = 0;
+  const aimAt = (from, to) => {
+    const ddx = to.x - from.x, ddz = to.z - from.z;
+    const ddy = (to.y + WORLD.bodyY) - (from.y + WORLD.eyeHeight);
+    return { yaw: Math.atan2(-ddx, -ddz), pitch: Math.asin(ddy / Math.hypot(ddx, ddy, ddz)) };
+  };
+
+  check('开局持有手枪与冲锋枪', !!p.owned.pistol && !!p.owned.smg && p.weapon === 'pistol');
+  check('初始弹匣已满', ammoOf(p).mag === PISTOL.magSize);
+  check('手枪备弹无限', ammoOf(p).reserve === Infinity);
+  const snap0 = snapshot(p);
+  check('快照带弹药与持有列表', snap0.ammo.mag === PISTOL.magSize && snap0.ammo.reserve === -1 && snap0.owned.includes('smg'));
+  check('每把枪数值完整', Object.values(WEAPONS).every((w) => w.damage > 0 && w.magSize > 0 && w.fireInterval > 0 && w.reloadTime > 0 && w.range > 0));
+
+  // 切枪
+  switchWeapon(p, 'smg');
+  check('切枪生效并进入硬直', p.weapon === 'smg' && p.swapUntil > Date.now());
+  switchWeapon(p, 'sniper');
+  check('未持有的武器无法切换', p.weapon === 'smg');
+  const aimT = aimAt(p, t);
+  handleShoot(p, { ...aimT });
+  check('切枪硬直期间无法开火', ammoOf(p).mag === weaponOf('smg').magSize);
+
+  // 开火消耗弹药
+  p.swapUntil = 0; p.lastFire = 0; p.burst = 0;
+  handleShoot(p, { ...aimT });
+  check('开火消耗弹药', ammoOf(p).mag === weaponOf('smg').magSize - 1);
+
+  // 换弹：开始 → 期间禁止开火 → 完成补弹
+  startReload(p);
+  check('换弹进入计时', p.reloadUntil > Date.now());
+  p.lastFire = 0;
+  handleShoot(p, { ...aimT });
+  check('换弹期间无法开火', ammoOf(p).mag === weaponOf('smg').magSize - 1);
+  p.reloadUntil = Date.now() - 1;
+  updatePlayer(p, 0.05);
+  check('换弹完成补满弹匣并扣备弹',
+    ammoOf(p).mag === weaponOf('smg').magSize &&
+    ammoOf(p).reserve === weaponOf('smg').reserveStart - 1);
+
+  // 打空弹匣 → 空枪 + 自动换弹
+  const magBefore = ammoOf(p).mag;
+  for (let i = 0; i <= magBefore; i++) { p.lastFire = 0; p.burst = 0; handleShoot(p, { ...aimT }); }
+  check('打空弹匣后自动换弹', ammoOf(p).mag === 0 && p.reloadUntil > 0);
+  check('空枪发出 dry_fire 提示', ws.sent.some((m) => m.t === 'dry_fire'));
+
+  // 霰弹枪：拾取 + 多弹丸
+  p.reloadUntil = 0; p.swapUntil = 0;
+  grantWeapon(p, 'shotgun');
+  check('拾取霰弹枪后持有并切换',
+    p.weapon === 'shotgun' && !!p.owned.shotgun && ammoOf(p).mag === weaponOf('shotgun').magSize);
+  const near = createPlayer(fakeWs(), 'NEAR');
+  p.x = 0; p.z = 7; p.y = 0;             // 开阔车道，避开中央擂台
+  near.x = 3; near.z = 7; near.y = 0;    // 3m 贴脸
+  p.swapUntil = 0; p.lastFire = 0; p.burst = 0;
+  handleShoot(p, { ...aimAt(p, near) });
+  const pelletsHit = ws.sent.filter((m) => m.t === 'hit' && m.targetId === near.id).pop();
+  check('霰弹枪一次开火多弹丸命中', !!pelletsHit && pelletsHit.pellets > 1);
+  check('霰弹枪贴脸可一发击倒', near.hp === 0 && !near.alive);
+
+  // 距离伤害衰减
+  const nearDmg = shotDamage(RIFLE, { part: 'body', dist: 10 });
+  const farDmg = shotDamage(RIFLE, { part: 'body', dist: 90 });
+  check('近距离不吃衰减', nearDmg === RIFLE.damage);
+  check('远距离伤害衰减', farDmg < nearDmg && farDmg === Math.round(RIFLE.damage * RIFLE.falloffMin));
+  check('爆头倍率生效', shotDamage(RIFLE, { part: 'head', dist: 10 }) > nearDmg);
+
+  players.delete(p.id); players.delete(t.id); players.delete(near.id);
 }
 
 // ---------- 单元测试：瞄准 / 护盾 / 加速 / 计分 ----------

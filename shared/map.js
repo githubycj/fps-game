@@ -1,4 +1,8 @@
 // ===== 共享地图数据 + 3D 平台碰撞（服务器与客户端共用，保证预测一致）=====
+import { WEAPONS, STARTING_WEAPONS, PICKUP_WEAPONS, WEAPON_ORDER } from './weapons.js';
+
+export { WEAPONS, STARTING_WEAPONS, PICKUP_WEAPONS, WEAPON_ORDER };
+export { weaponOf, falloffMultiplier, currentSpread, shotDamage, isWeaponId } from './weapons.js';
 
 export const WORLD = {
   size: 120,            // 竞技场边长（大图）
@@ -28,14 +32,9 @@ export const WORLD = {
   speedBoostMult: 1.5,  // 加速移速倍率
 };
 
-// 道具类型（地面随机刷新）
-export const ITEM_TYPES = ['medkit', 'ak47', 'shield', 'speed'];
-
-// 武器定义（fireInterval 秒，spread 弧度：>0 表示有散布，射程越远越偏）
-export const WEAPONS = {
-  pistol: { name: '手枪', fireInterval: 0.16, spread: 0 },
-  ak47:   { name: 'AK47', fireInterval: 0.09, spread: 0.05 },
-};
+// 道具类型（地面随机刷新）：功能道具 + 可在地图上争夺的武器
+// 武器详细数值见 shared/weapons.js
+export const ITEM_TYPES = ['medkit', 'shield', 'speed', ...PICKUP_WEAPONS];
 
 // 地面道具配置
 export const ITEMS = {
@@ -112,6 +111,7 @@ export const BOT_COLORS = { ally: 0x8fd88f, enemy: 0xe88a8a };
 // AI 配置（服务器使用；BOTS_MAX=0 可关闭）
 export const BOTS = {
   max: 3,                              // 最多 3 个敌军 AI
+  weapon: 'pistol',                    // AI 固定用手枪（不受弹匣/换弹限制，保持陪练节奏）
   firstMin: 10000, firstMax: 10000,    // 10 秒刷一个
   nextMin: 10000, nextMax: 10000,
   tick: 250,

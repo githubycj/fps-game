@@ -6,7 +6,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
-import { WORLD, COLLIDERS, TERRAIN as TERRAIN_FOR_SPOT, SPAWNS, PLAYER_COLORS, BOT_COLORS, BOTS, WEAPONS, ITEMS, ITEM_TYPES, circleOverlapsBox, stepPlayerPhysics } from '../shared/map.js';
+import {
+  WORLD, COLLIDERS, TERRAIN as TERRAIN_FOR_SPOT, SPAWNS, PLAYER_COLORS, BOT_COLORS, BOTS,
+  ITEMS, ITEM_TYPES, STARTING_WEAPONS,
+  weaponOf, isWeaponId, currentSpread, shotDamage,
+  circleOverlapsBox, stepPlayerPhysics,
+} from '../shared/map.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
@@ -91,9 +96,88 @@ function pickSpawn() {
   return { x: SPAWNS[0].x, z: SPAWNS[0].z };
 }
 
+// ---------- 武器 / 弹药 ----------
+// 弹药以 { mag, reserve } 存放；reserve 为 Infinity 表示无限备弹（手枪）
+function makeLoadout() {
+  const owned = {};
+  const ammo = {};
+  for (const id of STARTING_WEAPONS) {
+    const w = weaponOf(id);
+    owned[id] = true;
+    ammo[id] = { mag: w.magSize, reserve: w.reserveStart };
+  }
+  return { owned, ammo };
+}
+
+function ammoOf(p) {
+  if (!p.ammo[p.weapon]) {
+    const w = weaponOf(p.weapon);
+    p.ammo[p.weapon] = { mag: w.magSize, reserve: w.reserveStart };
+  }
+  return p.ammo[p.weapon];
+}
+
+// 开始换弹（换弹中禁止开火；切枪会打断）
+function startReload(p) {
+  const now = Date.now();
+  if (p.reloadUntil > 0) return false;
+  const w = weaponOf(p.weapon);
+  const a = ammoOf(p);
+  if (a.mag >= w.magSize) return false;
+  if (!(a.reserve > 0)) return false;   // 没备弹可换
+  p.reloadUntil = now + w.reloadTime * 1000;
+  send(p.ws, { t: 'reload_start', weapon: p.weapon, duration: Math.round(w.reloadTime * 1000) });
+  return true;
+}
+
+function finishReload(p) {
+  const w = weaponOf(p.weapon);
+  const a = ammoOf(p);
+  const need = w.magSize - a.mag;
+  const take = a.reserve === Infinity ? need : Math.min(need, a.reserve);
+  a.mag += take;
+  if (a.reserve !== Infinity) a.reserve -= take;
+  p.reloadUntil = 0;
+  send(p.ws, { t: 'reload_done', weapon: p.weapon, mag: a.mag, reserve: a.reserve === Infinity ? -1 : a.reserve });
+}
+
+// 切换武器（校验是否持有、是否处于切枪冷却）
+function switchWeapon(p, id) {
+  const now = Date.now();
+  if (!isWeaponId(id) || !p.owned[id] || id === p.weapon) return false;
+  if (now < p.swapUntil) return false;
+  const w = weaponOf(id);
+  p.weapon = id;
+  p.reloadUntil = 0;          // 切枪打断换弹
+  p.swapUntil = now + w.swapTime * 1000;
+  p.burst = 0;
+  send(p.ws, { t: 'weapon_switch', weapon: id, duration: Math.round(w.swapTime * 1000) });
+  return true;
+}
+
+// 拾取武器：加入持有列表并补满弹匣与备弹
+function grantWeapon(p, id) {
+  if (!isWeaponId(id)) return;
+  const w = weaponOf(id);
+  p.owned[id] = true;
+  p.ammo[id] = { mag: w.magSize, reserve: w.reserveStart };
+  switchWeapon(p, id);
+}
+
+function resetWeapons(p) {
+  const w = weaponOf(p.weapon);
+  p.weapon = 'pistol';
+  p.reloadUntil = 0;
+  p.swapUntil = 0;
+  p.burst = 0;
+  p.lastFire = 0;
+  void w;
+}
+
 function createPlayer(ws, name) {
   const spawn = pickSpawn();
   const color = PLAYER_COLORS[(nextId) % PLAYER_COLORS.length];
+  const { owned, ammo } = makeLoadout();
   const player = {
     id: 'p' + nextId++,
     ws,
@@ -106,9 +190,14 @@ function createPlayer(ws, name) {
     alive: true,
     respawnAt: 0,
     lastFire: 0,
+    lastShotAt: 0,
+    burst: 0,
     lastInputAt: 0,
     input: { mx: 0, mz: 0, jump: false },
     weapon: 'pistol',
+    owned, ammo,
+    reloadUntil: 0,
+    swapUntil: 0,
     team: 'blue',
     kills: 0, deaths: 0, streak: 0,
     shield: 0, speedUntil: 0, aiming: false,
@@ -123,19 +212,29 @@ function respawn(p) {
   p.x = s.x; p.y = 0; p.z = s.z;
   p.vy = 0; p.grounded = true;
   p.hp = WORLD.maxHp; p.alive = true;
-  p.weapon = 'pistol';
   p.shield = 0; p.speedUntil = 0; p.aiming = false; p.streak = 0;
   p.yaw = Math.atan2(s.x, s.z); p.pitch = 0;
   p.input = { mx: 0, mz: 0, jump: false };
+  // 死亡不没收已拾取的武器，但弹药补满（避免死亡惩罚过重）
+  for (const id of Object.keys(p.owned)) {
+    const w = weaponOf(id);
+    p.ammo[id] = { mag: w.magSize, reserve: w.reserveStart };
+  }
+  resetWeapons(p);
 }
 
 function snapshot(p) {
+  const a = p.ammo && p.ammo[p.weapon] ? p.ammo[p.weapon] : { mag: 0, reserve: 0 };
   return {
     id: p.id, name: p.name, color: p.color,
     x: round(p.x), y: round(p.y), z: round(p.z),
     yaw: p.yaw, pitch: p.pitch,
     hp: p.hp, alive: p.alive,
     weapon: p.weapon,
+    ammo: { mag: a.mag, reserve: a.reserve === Infinity ? -1 : a.reserve },
+    owned: p.owned ? Object.keys(p.owned) : ['pistol'],
+    reloadUntil: p.reloadUntil || 0,
+    swapUntil: p.swapUntil || 0,
     team: p.team,
     kills: p.kills, deaths: p.deaths,
     shield: p.shield,
@@ -148,12 +247,15 @@ function round(v) { return Math.round(v * 1000) / 1000; }
 
 // ---------- 逻辑更新 ----------
 function updatePlayer(p, dt) {
+  const nowMs = Date.now();
+  // 换弹计时完成 → 补弹
+  if (p.reloadUntil > 0 && nowMs >= p.reloadUntil) finishReload(p);
   // 客户端失联/空闲时停止移动，防止沿用最后一次输入（bot 由 AI 决策维护，不适用）
-  if (!p.bot && Date.now() - p.lastInputAt > 250) {
+  if (!p.bot && nowMs - p.lastInputAt > 250) {
     p.input = { mx: 0, mz: 0, jump: false };
   }
   if (!p.alive) {
-    if (Date.now() >= p.respawnAt) respawn(p);
+    if (nowMs >= p.respawnAt) respawn(p);
     return;
   }
   const { mx, mz, jump } = p.input;
@@ -166,7 +268,8 @@ function updatePlayer(p, dt) {
   const boosting = p.speedUntil > Date.now();
   const spd = WORLD.moveSpeed
     * (p.aiming ? WORLD.aimSpeedMult : 1)
-    * (boosting ? WORLD.speedBoostMult : 1);
+    * (boosting ? WORLD.speedBoostMult : 1)
+    * weaponOf(p.weapon).moveSpeedMult;   // 重武器更笨重
   p.x += fx * spd * dt;
   p.z += fz * spd * dt;
 
@@ -191,29 +294,8 @@ function updatePlayer(p, dt) {
   }
 }
 
-function handleShoot(p, msg) {
-  const now = Date.now();
-  if (!p.alive) return;
-  const wpn = WEAPONS[p.weapon] || WEAPONS.pistol;
-  if (now - p.lastFire < wpn.fireInterval * 1000) return;
-  p.lastFire = now;
-
-  let yaw = normalizeYaw(clampNum(msg.yaw, -64, 64));
-  let pitch = clampNum(msg.pitch, -1.5, 1.5);
-  // AK47 散布：射程越远越偏
-  const spread = wpn.spread * (p.aiming ? WORLD.aimSpreadMult : 1);
-  if (spread > 0) {
-    yaw += (Math.random() - 0.5) * 2 * spread;
-    pitch += (Math.random() - 0.5) * 2 * spread * 0.7;
-  }
-  p.yaw = yaw; p.pitch = pitch;
-
-  const ox = p.x, oy = p.y + WORLD.eyeHeight, oz = p.z;
-  const dir = dirFromYawPitch(yaw, pitch);
-
-  // 广播开火：让所有玩家都能看到曳光弹
-  broadcast({ t: 'shot', shooterId: p.id, x: round(ox), y: round(oy), z: round(oz), dx: dir.x, dy: dir.y, dz: dir.z });
-
+// 沿一条射线找最近的可命中目标（含部位判定与遮挡判定）
+function findHit(p, ox, oy, oz, dx, dy, dz, range) {
   let best = null;
   let bestT = Infinity;
   let bestPart = 'body';
@@ -222,27 +304,105 @@ function handleShoot(p, msg) {
     // 同队 bot 互不打（当前全部为敌军，互不伤害，只打真人）
     if (p.bot && q.bot && p.team === q.team) continue;
     // 部位判定：头部球 vs 身体球，取最近命中
-    const tHead = raySphere(ox, oy, oz, dir.x, dir.y, dir.z, q.x, q.y + WORLD.headY, q.z, WORLD.headR);
-    const tBody = raySphere(ox, oy, oz, dir.x, dir.y, dir.z, q.x, q.y + WORLD.bodyY, q.z, WORLD.bodyR);
+    const tHead = raySphere(ox, oy, oz, dx, dy, dz, q.x, q.y + WORLD.headY, q.z, WORLD.headR);
+    const tBody = raySphere(ox, oy, oz, dx, dy, dz, q.x, q.y + WORLD.bodyY, q.z, WORLD.bodyR);
     let t = tBody;
     let part = 'body';
     if (tHead < tBody) { t = tHead; part = 'head'; }
-    if (t < bestT && t <= WORLD.shootRange) {
+    if (t < bestT && t <= range) {
       bestT = t;
       best = q;
       bestPart = part;
     }
   }
+  if (!best) return null;
+  if (losBlocked(ox, oy, oz, dx, dy, dz, bestT)) return null;
+  return { target: best, part: bestPart, t: bestT };
+}
+
+function handleShoot(p, msg) {
+  const now = Date.now();
+  if (!p.alive) return;
+  if (now < p.swapUntil) return;    // 切枪硬直中
+  if (p.reloadUntil > 0) return;    // 换弹中
+
+  const w = weaponOf(p.weapon);
+  if (now - p.lastFire < w.fireInterval * 1000) return;
+
+  // 弹药检查（AI 不受弹药限制）
+  const a = ammoOf(p);
+  if (!p.bot && a.mag <= 0) {
+    p.lastFire = now;
+    send(p.ws, { t: 'dry_fire', weapon: p.weapon });
+    startReload(p);
+    return;
+  }
+  p.lastFire = now;
+  if (!p.bot) a.mag -= 1;
+
+  // 连发计数（停火 450ms 重置）→ 散布随连发累积
+  if (now - p.lastShotAt > 450) p.burst = 0;
+  p.lastShotAt = now;
+  p.burst = Math.min(p.burst + 1, 30);
+
+  const baseYaw = normalizeYaw(clampNum(msg.yaw, -64, 64));
+  const basePitch = clampNum(msg.pitch, -1.5, 1.5);
+  p.yaw = baseYaw; p.pitch = basePitch;
+
+  const ox = p.x, oy = p.y + WORLD.eyeHeight, oz = p.z;
+  const mainDir = dirFromYawPitch(baseYaw, basePitch);
+
+  // 广播开火：让所有玩家都能看到曳光弹
+  broadcast({
+    t: 'shot', shooterId: p.id, weapon: p.weapon,
+    x: round(ox), y: round(oy), z: round(oz),
+    dx: mainDir.x, dy: mainDir.y, dz: mainDir.z,
+  });
+
+  // 散布：腰射 + 移动 + 连发累积，ADS 收紧
+  const moving = !p.bot && p.grounded && (Math.abs(p.input.mx) > 0.01 || Math.abs(p.input.mz) > 0.01);
+  const spread = currentSpread(w, { moving, ads: p.aiming, shots: p.burst - 1 });
+  const pellets = Math.max(1, Math.floor(w.pellets || 1));
+
+  // 逐弹丸命中，按受害者汇总伤害（霰弹枪一次可命中多发）
+  const damageMap = new Map();
+  for (let i = 0; i < pellets; i++) {
+    let yaw = baseYaw, pitch = basePitch;
+    // 霰弹扩散：以主方向为轴的锥形分布
+    if (pellets > 1 && w.pelletSpread > 0) {
+      const ang = (i / pellets) * Math.PI * 2 + Math.random() * 0.7;
+      const rad = w.pelletSpread * Math.sqrt(Math.random());
+      yaw += Math.cos(ang) * rad;
+      pitch += Math.sin(ang) * rad;
+    }
+    // 武器自身散布
+    if (spread > 0) {
+      yaw += (Math.random() - 0.5) * 2 * spread;
+      pitch += (Math.random() - 0.5) * 2 * spread * 0.7;
+    }
+    const dir = dirFromYawPitch(yaw, pitch);
+    const hit = findHit(p, ox, oy, oz, dir.x, dir.y, dir.z, w.range);
+    if (!hit) continue;
+    const dmg = Math.max(1, Math.round(shotDamage(w, { part: hit.part, dist: hit.t }) * (p.bot ? BOTS.damageMult : 1)));
+    let rec = damageMap.get(hit.target.id);
+    if (!rec) {
+      rec = { target: hit.target, dmg: 0, head: 0, body: 0, t: hit.t };
+      damageMap.set(hit.target.id, rec);
+    }
+    rec.dmg += dmg;
+    if (hit.part === 'head') rec.head++; else rec.body++;
+    if (hit.t < rec.t) rec.t = hit.t;
+  }
 
   if (process.env.DEBUG_SHOOT) {
-    console.log('[shoot]', p.name, 'from', ox.toFixed(1), oy.toFixed(1), oz.toFixed(1),
-      'yaw', yaw.toFixed(2), 'pitch', pitch.toFixed(2), 'best', best ? best.name : 'none',
-      'part', bestPart, 't', Number.isFinite(bestT) ? bestT.toFixed(1) : 'inf',
-      'blocked', best ? losBlocked(ox, oy, oz, dir.x, dir.y, dir.z, bestT) : '-');
+    console.log('[shoot]', p.name, p.weapon, 'spread', spread.toFixed(4), 'pellets', pellets,
+      'hits', [...damageMap.values()].map((r) => `${r.target.name}:${r.dmg}`).join(',') || 'none');
   }
-  if (best && !losBlocked(ox, oy, oz, dir.x, dir.y, dir.z, bestT)) {
-    const base = bestPart === 'head' ? Math.round(WORLD.damage * WORLD.headshotMult) : WORLD.damage;
-    let dmg = p.bot ? Math.max(1, Math.round(base * BOTS.damageMult)) : base;
+
+  for (const rec of damageMap.values()) {
+    const best = rec.target;
+    const part = rec.head > 0 ? 'head' : 'body';
+    let dmg = rec.dmg;
     // 护盾先吸收伤害
     if (best.shield > 0) {
       const absorbed = Math.min(best.shield, dmg);
@@ -252,9 +412,13 @@ function handleShoot(p, msg) {
     if (dmg > 0) best.hp -= dmg;
     const killed = best.hp <= 0;
     if (killed) best.hp = 0;
-    const hx = ox + dir.x * bestT, hy = oy + dir.y * bestT, hz = oz + dir.z * bestT;
-    send(best.ws, { t: 'hit', shooterId: p.id, targetId: best.id, dmg, part: bestPart, killed, x: round(hx), y: round(hy), z: round(hz) });
-    send(p.ws, { t: 'hit', shooterId: p.id, targetId: best.id, dmg, part: bestPart, killed, x: round(hx), y: round(hy), z: round(hz) });
+    const hx = ox + mainDir.x * rec.t, hy = oy + mainDir.y * rec.t, hz = oz + mainDir.z * rec.t;
+    const hitMsg = {
+      t: 'hit', shooterId: p.id, targetId: best.id, dmg: rec.dmg, part, killed,
+      pellets: rec.head + rec.body, x: round(hx), y: round(hy), z: round(hz),
+    };
+    send(best.ws, hitMsg);
+    send(p.ws, hitMsg);
     if (killed) {
       best.alive = false;
       best.respawnAt = Date.now() + WORLD.respawnTime * 1000;
@@ -262,7 +426,7 @@ function handleShoot(p, msg) {
       best.streak = 0;
       p.kills++;
       p.streak++;
-      broadcast({ t: 'death', id: best.id, killerId: p.id, killerName: p.name });
+      broadcast({ t: 'death', id: best.id, killerId: p.id, killerName: p.name, weapon: p.weapon, part });
       if (p.streak >= 2) {
         broadcast({ t: 'streak', playerId: p.id, name: p.name, streak: p.streak });
       }
@@ -316,10 +480,10 @@ function spawnItem(forceType) {
 }
 function applyItem(p, it) {
   if (it.type === 'medkit') p.hp = WORLD.maxHp;
-  else if (it.type === 'ak47') p.weapon = 'ak47';
+  else if (isWeaponId(it.type)) grantWeapon(p, it.type);   // 武器类道具：加入持有并立即切换
   else if (it.type === 'shield') p.shield = WORLD.shieldMax;
   else if (it.type === 'speed') p.speedUntil = Date.now() + WORLD.speedBoostMs;
-  send(p.ws, { t: 'pickup', type: it.type });
+  send(p.ws, { t: 'pickup', type: it.type, weapon: p.weapon });
 }
 
 // ---------- AI 对手 ----------
@@ -338,6 +502,8 @@ function randomWaypoint() {
 function createBot(teamArg) {
   const spawn = pickSpawn();
   const team = teamArg || 'enemy';
+  const botOwned = { [BOTS.weapon]: true };
+  const botAmmo = { [BOTS.weapon]: { mag: weaponOf(BOTS.weapon).magSize, reserve: Infinity } };
   const bot = {
     id: 'bot' + botSeq,
     ws: null,
@@ -351,7 +517,13 @@ function createBot(teamArg) {
     input: { mx: 0, mz: 0, jump: false },
     color: BOT_COLORS[team],
     team,
-    weapon: 'pistol',
+    weapon: BOTS.weapon,
+    owned: botOwned,
+    ammo: botAmmo,
+    reloadUntil: 0,
+    swapUntil: 0,
+    burst: 0,
+    lastShotAt: 0,
     kills: 0, deaths: 0, streak: 0,
     shield: 0, speedUntil: 0, aiming: false,
     waypoint: null,
@@ -503,6 +675,14 @@ wss.on('connection', (ws) => {
       }
       case 'shoot': {
         if (player) handleShoot(player, msg);
+        break;
+      }
+      case 'reload': {
+        if (player) startReload(player);
+        break;
+      }
+      case 'switch': {
+        if (player) switchWeapon(player, msg.weapon);
         break;
       }
       case 'ping': {
@@ -660,4 +840,8 @@ if (isMain) {
   }, BOTS.tick);
 }
 
-export { createPlayer, createBot, handleShoot, respawn, snapshot, updatePlayer, aiUpdate, canSee, countBots, spawnItem, applyItem, items, raySphere, losBlocked, players };
+export {
+  createPlayer, createBot, handleShoot, respawn, snapshot, updatePlayer, aiUpdate, canSee, countBots,
+  spawnItem, applyItem, items, raySphere, losBlocked, players,
+  startReload, finishReload, switchWeapon, grantWeapon, ammoOf, makeLoadout,
+};
