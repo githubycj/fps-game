@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>霓虹战场 · NEON ARENA</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <!-- 主菜单 -->
+  <div id="menu" class="overlay">
+    <div class="card">
+      <h1 class="title">霓虹战场</h1>
+      <p class="subtitle">NEON ARENA · 3D 多人对战</p>
+      <div class="field">
+        <label for="nick">代号</label>
+        <input id="nick" maxlength="12" placeholder="输入你的昵称" autocomplete="off" spellcheck="false" />
+      </div>
+      <button id="joinBtn">进入战场</button>
+      <div id="connStatus" class="status">未连接</div>
+      <div class="help">
+        <p>WASD 移动 · 空格 跳跃 · 左键 射击 · 右键 瞄准（ADS）</p>
+        <p>局域网联机：先运行 <b>npm run dev</b>，再让朋友访问 <b>http://本机IP:4173</b></p>
+      </div>
+    </div>
+  </div>
+
+  <!-- HUD -->
+  <div id="hud" class="hidden">
+    <div id="status">连接中…</div>
+    <div id="score">击杀 0 · 死亡 0</div>
+    <div id="players"></div>
+
+    <div id="shieldWrap" class="hidden">
+      <span class="hp-label">护盾</span>
+      <div class="hp-bar shield"><div id="shieldFill"></div></div>
+    </div>
+
+    <div id="hpWrap">
+      <span class="hp-label">生命</span>
+      <div class="hp-bar"><div id="hpFill"></div></div>
+      <span id="hpNum">100</span>
+    </div>
+
+    <div id="hint">WASD 移动 · 空格 跳跃 · 左键 射击 · 右键 瞄准</div>
+    <div id="weapon">手枪</div>
+    <div id="speedBadge" class="hidden">加速中</div>
+    <div id="crosshair"></div>
+    <div id="hitmarker" class="hidden"></div>
+    <div id="flash" class="hidden"></div>
+
+    <div id="pause" class="overlay hidden"><div class="card small"><div id="pauseText">点击屏幕进入战斗</div></div></div>
+    <div id="death" class="overlay hidden">
+      <div class="card small death-card">
+        <div id="deathText">你被击倒</div>
+        <div id="deathSub">重生中…</div>
+      </div>
+    </div>
+
+    <div id="toasts"></div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
