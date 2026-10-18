@@ -336,6 +336,8 @@ export class Effects {
     }
     if (this.systems.length < MAX_SYSTEMS) {
       const s = new ParticleSystem();
+      // 创建即常驻场景（后面只切 visible），避免增删对象触发材质重编译导致卡顿
+      if (this.scene) this.scene.add(s.points);
       this.systems.push(s);
       return s;
     }
@@ -348,7 +350,7 @@ export class Effects {
   _releaseSystem(s) {
     s.active = false;
     s.points.visible = false;
-    if (this.scene && s.points.parent === this.scene) this.scene.remove(s.points);
+    // 常驻场景：不 remove（remove 后再次 add 会为所有材质触发一次著色器重建，造成卡顿）
     const i = this.activeSystems.indexOf(s);
     if (i >= 0) this.activeSystems.splice(i, 1);
     s.geo.setDrawRange(0, 0);
@@ -401,7 +403,7 @@ export class Effects {
     sys.attr.needsUpdate = true;
     sys.geo.setDrawRange(0, count);
     sys.points.visible = true;
-    if (this.scene && sys.points.parent !== this.scene) this.scene.add(sys.points);
+    // 常驻场景（只在创建时 add 一次），避免反复增删导致材质重编译卡顿
     this.activeSystems.push(sys);
     return sys;
   }
@@ -414,6 +416,8 @@ export class Effects {
     }
     if (this.flashPool.length < MAX_FLASHES) {
       const f = this._createFlash();
+      // 创建即常驻场景
+      if (this.scene) this.scene.add(f.group);
       this.flashPool.push(f);
       return f;
     }
@@ -469,7 +473,8 @@ export class Effects {
 
   _releaseFlash(f) {
     f.active = false;
-    if (this.scene && f.group.parent === this.scene) this.scene.remove(f.group);
+    // 常驻场景：只用 visible 控制，避免反复增删触发材质重编译（会卡 2~3 秒）
+    f.group.visible = false;
     const i = this.activeFlashes.indexOf(f);
     if (i >= 0) this.activeFlashes.splice(i, 1);
   }
@@ -505,6 +510,8 @@ export class Effects {
     }
     if (this.shellPool.length < MAX_SHELLS) {
       const s = this._createShell();
+      // 创建即常驻场景
+      if (this.scene) this.scene.add(s.mesh);
       this.shellPool.push(s);
       return s;
     }
@@ -515,20 +522,26 @@ export class Effects {
 
   _releaseShell(s) {
     s.active = false;
-    if (this.scene && s.mesh.parent === this.scene) this.scene.remove(s.mesh);
+    // 常驻场景，只用 visible 控制
+    s.mesh.visible = false;
     const i = this.activeShells.indexOf(s);
     if (i >= 0) this.activeShells.splice(i, 1);
   }
 
-  // ---------- 常驻点光池（避免灯光数量变化导致 shader 重编译） ----------
-
+  // ---------- 常驻点光池 ----------
+  // 关键：所有点光必须【从第一帧起就一直挂在场景里】，只用 intensity 控制明灭。
+  // 一旦动态 add/remove 灯光，three.js 会认为灯光数量变化 → 重新编译所有材质，
+  // 每次开枪都会造成 2~3 秒的主线程冻结（这正是"AI 交火时剧烈卡顿"的原因）。
   _ensureLights() {
     if (this.lightsReady) return true;
     this.lightsReady = true;
     for (let i = 0; i < MAX_LIGHTS; i++) {
       const light = new THREE.PointLight(0xffc070, 0, 8, 2);
       light.position.set(0, -999, 0);
-      // 注意：不常驻场景；使用时临时 add、熄灭后 remove，保证场景对象数可回到基线。
+      light.intensity = 0;
+      light.castShadow = false;
+      light.visible = true;          // 常驻：只靠 intensity 控制
+      if (this.scene) this.scene.add(light);
       this.lightPool.push({ light, life: 0, maxLife: 1, peak: 0, active: false });
     }
     return true;
@@ -556,7 +569,7 @@ export class Effects {
     slot.light.distance = distance || 6;
     slot.light.position.set(position.x, position.y, position.z);
     slot.light.intensity = intensity;
-    if (this.scene && slot.light.parent !== this.scene) this.scene.add(slot.light);
+    // 灯常驻场景，这里绝不能再 add/remove（会触发材质重编译导致卡顿）
   }
 
   // ---------- 对外特效接口 ----------
@@ -603,7 +616,7 @@ export class Effects {
       f.cone.material.color.set(k.color);
       f.cone.material.opacity = 0.9;
     }
-    if (this.scene) this.scene.add(f.group);
+    f.group.visible = true;      // 常驻场景，仅切可见性
     this.activeFlashes.push(f);
 
     // 点光：照亮周围墙体/地面，但不参与着色器重编译（常驻灯池）
@@ -672,7 +685,7 @@ export class Effects {
     );
     s.life = 1.4 + Math.random() * 0.6;
     s.floorY = 0.03;
-    if (this.scene) this.scene.add(s.mesh);
+    s.mesh.visible = true;       // 常驻场景，仅切可见性
     this.activeShells.push(s);
   }
 
@@ -864,7 +877,7 @@ export class Effects {
         l.active = false;
         l.light.intensity = 0;
         l.light.position.set(0, -999, 0);
-        if (this.scene && l.light.parent === this.scene) this.scene.remove(l.light);
+        // 灯光常驻场景，只把强度归零（移除会让 three 重新编译所有材质，造成卡顿）
         continue;
       }
       const k = l.life / l.maxLife;

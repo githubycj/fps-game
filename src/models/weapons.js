@@ -95,13 +95,18 @@ function getMaterial(group) {
       roughness: 0.72, metalness: 0.06, envMapIntensity: 0.8,
     });
   } else {
-    // 镜片：极淡抗反射镀膜（几乎透明 + 不写深度），保证透过镜片能看清准星与目标
-    m = new THREE.MeshStandardMaterial({
-      color: 0xdff0ff, roughness: 0.08, metalness: 0.0,
-      transparent: true, opacity: 0.07, depthWrite: false,
-      side: THREE.DoubleSide, envMapIntensity: 0.8,
+    // 镜片：近乎完全透明（抗反射镀膜），保证透过镜片能清楚看到准星与目标。
+    // 注意：透明材质若还不写深度，会"透不出来"——这里同时把 opacity 压到极低、
+    // 关闭高光反射（否则低角度会整片泛蓝变暗），并设置极小的渲染顺序避免遮挡红点。
+    m = new THREE.MeshBasicMaterial({
+      color: 0xeaf6ff,
+      transparent: true, opacity: 0.045,
+      depthWrite: false, depthTest: true,
+      side: THREE.DoubleSide,
+      toneMapped: false,
+      blending: THREE.NormalBlending,
     });
-    m.toneMapped = true;
+    m.userData.isLens = true;
   }
   matCache.set(group, m);
   return m;
@@ -618,7 +623,7 @@ function buildSmg(b) {
     rightGrip: [0, -0.016, 0.042],
     leftGrip: [0, 0.038, -0.365],
     boltAxis: null,
-    sprite: { color: COL.dotRed, size: 0.010, position: [0, 0.149, -0.118] },
+    sprite: { color: COL.dotRed, size: 0.022, position: [0, 0.149, -0.118] },
   };
 }
 
@@ -1083,8 +1088,10 @@ function getDotTexture() {
   dotTexture = new THREE.DataTexture(data, size, size, THREE.RGBAFormat, THREE.UnsignedByteType);
   dotTexture.colorSpace = THREE.SRGBColorSpace;
   dotTexture.magFilter = THREE.LinearFilter;
-  dotTexture.minFilter = THREE.LinearMipmapLinearFilter;
-  dotTexture.generateMipmaps = true;
+  // 关键：不要生成 mipmap。红点在屏幕上往往只有几像素，
+  // 一旦用 mipmap 过滤，亮核会被平均成接近透明，看起来"红点消失"。
+  dotTexture.minFilter = THREE.LinearFilter;
+  dotTexture.generateMipmaps = false;
   dotTexture.needsUpdate = true;
   return dotTexture;
 }
@@ -1115,9 +1122,12 @@ export function makeRedDotSprite(color = COL.dotRed, size = 0.010) {
   }
   // 注意：红点 sprite 的材质在缓存中共享，depthTest=false 对所有红点生效（开镜时才会显示）
   material.depthTest = false;
+  // 透明物体（含 sprite）默认在不透明物体之后绘制；这里给更高 renderOrder 保证
+  // 红点一定画在镜片/镜框之后，不会被半透明镜片盖掉。
+  material.depthWrite = false;
   const sprite = new THREE.Sprite(material);
   sprite.scale.set(size, size, 1);
-  sprite.renderOrder = 1000;
+  sprite.renderOrder = 1200;
   sprite.frustumCulled = false;
   sprite.name = 'redDotSprite';
   return sprite;
@@ -1160,6 +1170,11 @@ export function createWeaponModel(kind, { firstPerson = false, simple = false } 
     mesh.castShadow = !firstPerson;
     mesh.receiveShadow = false;
     mesh.frustumCulled = !firstPerson;
+    // 镜片放在不透明物体之后、红点 sprite 之前渲染，确保"透"得出来
+    if (m.material && m.material.userData && m.material.userData.isLens) {
+      mesh.renderOrder = 1;
+      mesh.name = 'lens';
+    }
     group.add(mesh);
   }
 
