@@ -3,77 +3,255 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>霓虹战场 · NEON ARENA</title>
+  <meta name="color-scheme" content="dark" />
+  <title>郊区战场 · SUBURBAN FRONT</title>
   <link rel="icon" href="data:," />
   <link rel="stylesheet" href="/src/style.css" />
 </head>
 <body>
+  <!-- 3D 战场画布 -->
   <canvas id="game"></canvas>
 
-  <!-- 主菜单 -->
-  <div id="menu" class="overlay">
-    <div class="card">
-      <h1 class="title">霓虹战场</h1>
-      <p class="subtitle">NEON ARENA · 3D 多人对战</p>
-      <div class="field">
-        <label for="nick">代号</label>
-        <input id="nick" maxlength="12" placeholder="输入你的昵称" autocomplete="off" spellcheck="false" />
+  <!-- ===== 主菜单 ===== -->
+  <div id="menu" class="overlay menu-overlay">
+    <div class="card menu-card">
+      <header class="menu-head">
+        <div class="menu-kicker">SUBURBAN FRONT · DOMINATION</div>
+        <h1 class="title">郊区战场</h1>
+        <p class="subtitle">初秋 16:00 · 西村 — 中央广场 — 东站</p>
+      </header>
+
+      <div class="menu-body">
+        <section class="menu-left">
+          <div class="field">
+            <label for="nick">作战代号</label>
+            <input id="nick" maxlength="12" placeholder="输入你的昵称" autocomplete="off" spellcheck="false" />
+          </div>
+          <button id="joinBtn" type="button">进入战场</button>
+          <div id="connStatus" class="status">未连接</div>
+
+          <div class="settings">
+            <div class="settings-title">战场设置</div>
+            <div class="set-row">
+              <label for="qualitySelect">画质</label>
+              <select id="qualitySelect">
+                <option value="auto">自动（推荐）</option>
+                <option value="high">高</option>
+                <option value="medium">中</option>
+                <option value="low">低</option>
+              </select>
+            </div>
+            <div class="set-row">
+              <label for="sensRange">鼠标灵敏度</label>
+              <input id="sensRange" type="range" min="0.2" max="3" step="0.05" value="1" />
+              <span id="sensValue" class="mono">1.00</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="menu-right">
+          <div class="menu-section-title">操作说明</div>
+          <div class="controls">
+            <div class="ctrl"><kbd>W A S D</kbd><span>移动</span></div>
+            <div class="ctrl"><kbd>Shift</kbd><span>冲刺（耗体力）</span></div>
+            <div class="ctrl"><kbd>C</kbd><span>蹲下 / 冲刺中滑铲</span></div>
+            <div class="ctrl"><kbd>空格</kbd><span>跳跃</span></div>
+            <div class="ctrl"><kbd>左键</kbd><span>射击</span></div>
+            <div class="ctrl"><kbd>右键</kbd><span>开镜瞄准</span></div>
+            <div class="ctrl"><kbd>R</kbd><span>换弹</span></div>
+            <div class="ctrl"><kbd>1-5 / Q / 滚轮</kbd><span>切换武器</span></div>
+          </div>
+          <p class="menu-note">
+            据点争夺：占领 <b>A / B / C</b> 据点持续得分，先到 <b>240</b> 分或时间结束时领先者获胜。
+            5 连杀呼叫全队 <b>UAV</b>，10 秒内暴露敌军位置。
+          </p>
+        </section>
       </div>
-      <button id="joinBtn">进入战场</button>
-      <div id="connStatus" class="status">未连接</div>
-      <div class="help">
-        <p>WASD 移动 · 空格 跳跃 · 左键 射击 · 右键 瞄准（ADS）</p>
-        <p>局域网联机：先运行 <b>npm run dev</b>，再让朋友访问 <b>http://本机IP:4173</b></p>
-      </div>
+
+      <footer class="menu-foot">
+        局域网联机：先运行 <b>npm run dev</b>，好友访问 <b>http://本机IP:4173</b>
+      </footer>
     </div>
   </div>
 
-  <!-- HUD -->
+  <!-- ===== 战斗 HUD ===== -->
   <div id="hud" class="hidden">
-    <div id="status">连接中…</div>
-    <div id="score">击杀 0 · 死亡 0</div>
+    <!-- 左上：连接状态 / K/D / UAV / 连杀 -->
+    <div id="hudTopLeft">
+      <div id="status">连接中…</div>
+      <div id="ping" class="mono">-- ms</div>
+      <div id="score">击杀 0 · 死亡 0</div>
+      <div id="uavBadge" class="hidden"><span class="uav-label">UAV</span><b id="uavTime" class="mono">0s</b></div>
+      <div id="streakBadge" class="hidden">2 连杀</div>
+    </div>
+
+    <!-- 左侧：人员列表 -->
     <div id="players"></div>
 
-    <div id="shieldWrap" class="hidden">
-      <span class="hp-label">护盾</span>
-      <div class="hp-bar shield"><div id="shieldFill"></div></div>
-    </div>
-
-    <div id="hpWrap">
-      <span class="hp-label">生命</span>
-      <div class="hp-bar"><div id="hpFill"></div></div>
-      <span id="hpNum">100</span>
-    </div>
-
-    <div id="hint">WASD 移动 · 空格 跳跃 · 左键 射击 · 右键 瞄准 · R 换弹 · 1~5/滚轮 换枪</div>
-    <div id="weapon">手枪</div>
-    <div id="speedBadge" class="hidden">加速中</div>
-
-    <!-- 弹药 / 换弹 / 武器栏 -->
-    <div id="ammoWrap">
-      <div id="ammoLine">
-        <span id="ammoMag">12</span><span id="ammoSep">/</span><span id="ammoReserve">∞</span>
+    <!-- 顶部中央：罗盘 / 比分 / 据点占领 -->
+    <div id="hudTop">
+      <div id="compass">
+        <div id="compassStrip"></div>
+        <div id="compassMarks"></div>
+        <div class="compass-caret"></div>
+        <span id="compassHeading" class="mono">000</span>
       </div>
-      <div id="reloadWrap" class="hidden">
-        <span class="reload-label">换弹</span>
-        <div class="reload-bar"><i id="reloadFill"></i></div>
+
+      <div id="scoreBar">
+        <div class="team-side team-alpha">
+          <span class="team-tag-name">ALPHA</span>
+          <span id="scoreAlpha" class="score-val mono">0</span>
+        </div>
+        <div class="score-mid">
+          <span id="timer" class="mono">10:00</span>
+          <span id="modeLabel">据点争夺</span>
+          <span id="scoreTarget">先到 240 分</span>
+        </div>
+        <div class="team-side team-bravo">
+          <span id="scoreBravo" class="score-val mono">0</span>
+          <span class="team-tag-name">BRAVO</span>
+        </div>
+      </div>
+
+      <div id="zoneBar"></div>
+    </div>
+
+    <div id="toasts"></div>
+
+    <!-- 右上：小地图 / 击杀信息 -->
+    <div id="hudTopRight">
+      <div id="minimapWrap">
+        <canvas id="minimap" width="196" height="196"></canvas>
+        <div class="mm-frame"></div>
+        <div class="mm-label"><span>TACMAP</span><span id="uavDot" class="hidden">UAV</span></div>
+      </div>
+      <div id="killfeed"></div>
+    </div>
+
+    <!-- 左下：生命体征 -->
+    <div id="vitals">
+      <div id="shieldWrap" class="hidden">
+        <span class="vital-label">护盾</span>
+        <div class="hp-bar shield"><div id="shieldFill"></div></div>
+        <span id="shieldNum" class="mono">0</span>
+      </div>
+      <div id="hpWrap">
+        <span class="vital-label">生命</span>
+        <div class="hp-bar"><div id="hpFill"></div></div>
+        <span id="hpNum" class="mono">100</span>
+      </div>
+      <div class="stamina-row">
+        <span class="vital-label">体力</span>
+        <div id="staminaBar"><i></i></div>
+        <span id="stanceBadge" class="stance-badge">站立</span>
+        <span id="speedBadge" class="hidden">加速</span>
       </div>
     </div>
-    <div id="weaponSlots"></div>
 
-    <div id="crosshair"></div>
-    <div id="hitmarker" class="hidden"></div>
+    <!-- 右下：武器 / 弹药 -->
+    <div id="hudBottomRight">
+      <div id="weaponSlots"></div>
+      <div id="ammoWrap">
+        <div id="weaponLine"><span id="weapon">手枪</span></div>
+        <div id="ammoLine">
+          <span id="ammoMag" class="mono">12</span><span id="ammoSep">/</span><span id="ammoReserve" class="mono">∞</span>
+        </div>
+        <div id="reloadWrap" class="hidden">
+          <span class="reload-label">换弹</span>
+          <div class="reload-bar"><i id="reloadFill"></i></div>
+        </div>
+      </div>
+    </div>
+
+    <div id="hint">WASD 移动 · Shift 冲刺 · C 蹲下 · 空格 跳跃 · 左键 射击 · 右键 开镜 · R 换弹 · 1-5 / Q / 滚轮 切枪</div>
+
+    <!-- 准星 / 命中标记 / 受伤方向 / 红闪 -->
+    <div id="crosshair">
+      <span class="ch t"></span><span class="ch r"></span><span class="ch b"></span><span class="ch l"></span>
+      <span id="crosshair-dot"></span>
+    </div>
+    <div id="hitmarker"></div>
+    <div id="hitmarker-head"></div>
+    <div id="dmgIndicators"></div>
     <div id="flash" class="hidden"></div>
 
-    <div id="pause" class="overlay hidden"><div class="card small"><div id="pauseText">点击屏幕进入战斗</div></div></div>
+    <!-- 狙击开镜遮罩：圆形透明中心 + 黑色外圈 + 分划 + 暗角 + 轻微色差 -->
+    <div id="scopeOverlay" class="hidden">
+      <div class="scope-aperture">
+        <div class="scope-chroma chroma-red"></div>
+        <div class="scope-chroma chroma-blue"></div>
+        <div class="scope-vignette"></div>
+        <svg class="scope-reticle" viewBox="0 0 400 400" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
+          <g class="reticle-lines">
+            <!-- 镜筒边缘环 -->
+            <circle cx="200" cy="200" r="194" class="ring" />
+            <circle cx="200" cy="200" r="186" class="ring faint" />
+            <!-- 主十字：中心留出透明缺口 -->
+            <line x1="10" y1="200" x2="186" y2="200" />
+            <line x1="214" y1="200" x2="390" y2="200" />
+            <line x1="200" y1="10" x2="200" y2="186" />
+            <line x1="200" y1="214" x2="200" y2="390" />
+            <!-- 中心细十字 -->
+            <line x1="186" y1="200" x2="193" y2="200" class="hair" />
+            <line x1="207" y1="200" x2="214" y2="200" class="hair" />
+            <line x1="200" y1="186" x2="200" y2="193" class="hair" />
+            <line x1="200" y1="207" x2="200" y2="214" class="hair" />
+            <!-- 水平密位点 -->
+            <circle cx="170" cy="200" r="1.6" /><circle cx="140" cy="200" r="1.6" />
+            <circle cx="110" cy="200" r="1.6" /><circle cx="80" cy="200" r="1.6" />
+            <circle cx="230" cy="200" r="1.6" /><circle cx="260" cy="200" r="1.6" />
+            <circle cx="290" cy="200" r="1.6" /><circle cx="320" cy="200" r="1.6" />
+            <!-- 下方垂直密位点 + 测距刻线 -->
+            <circle cx="200" cy="230" r="1.6" /><circle cx="200" cy="260" r="1.6" />
+            <circle cx="200" cy="290" r="1.6" /><circle cx="200" cy="320" r="1.6" />
+            <line x1="190" y1="230" x2="210" y2="230" class="tick" />
+            <line x1="186" y1="260" x2="214" y2="260" class="tick" />
+            <line x1="190" y1="290" x2="210" y2="290" class="tick" />
+            <line x1="186" y1="320" x2="214" y2="320" class="tick" />
+            <!-- 上方垂直密位点 -->
+            <circle cx="200" cy="170" r="1.6" /><circle cx="200" cy="140" r="1.6" />
+            <!-- 左右测距短刻线 -->
+            <line x1="150" y1="196" x2="150" y2="204" class="tick" />
+            <line x1="120" y1="197" x2="120" y2="203" class="tick" />
+            <line x1="250" y1="196" x2="250" y2="204" class="tick" />
+            <line x1="280" y1="197" x2="280" y2="203" class="tick" />
+          </g>
+          <g class="reticle-marks">
+            <text x="222" y="264">4</text>
+            <text x="222" y="294">6</text>
+            <text x="222" y="324">8</text>
+          </g>
+        </svg>
+        <div id="scopeZoom" class="scope-zoom mono">6×</div>
+      </div>
+    </div>
+
+    <!-- 暂停 / 死亡 / 结算 -->
+    <div id="pause" class="overlay hidden">
+      <div class="card small pause-card">
+        <div class="card-kicker">TACTICAL PAUSE</div>
+        <div id="pauseText">点击屏幕进入战斗</div>
+        <div class="card-sub">点击画面锁定鼠标继续操作</div>
+      </div>
+    </div>
+
     <div id="death" class="overlay hidden">
       <div class="card small death-card">
+        <div class="card-kicker danger">K.I.A.</div>
         <div id="deathText">你被击倒</div>
         <div id="deathSub">重生中…</div>
       </div>
     </div>
 
-    <div id="toasts"></div>
+    <div id="matchEnd" class="overlay hidden">
+      <div class="card result-card">
+        <div class="card-kicker">AFTER ACTION REPORT</div>
+        <div id="matchEndTitle">胜 利</div>
+        <div id="matchEndScores" class="mono">0 : 0</div>
+        <div id="matchEndSub">据点争夺 · 最终比分</div>
+        <div class="card-sub">8 秒后进入下一局</div>
+      </div>
+    </div>
   </div>
 
   <script type="module" src="/src/main.js"></script>

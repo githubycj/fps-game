@@ -1,256 +1,239 @@
-// ===== 构建 3D 场景：明亮低多边形竞技场（静态几何合并以减少绘制调用）=====
-// 视觉取向：分层配色（底座 / 主体 / 顶面 / 描边）+ 渐变天空 + 柔和阴影，保证明亮可读又有层次。
+// ===== 郊区战场 · 场景模块入口 =====
+// 契约（REMAKE_SPEC §6.1）：
+//   buildWorld(scene, renderer, opts) -> {
+//     raycastTargets, sun, hemi, quality, setQuality(q),
+//     update(dt, ctx), render(camera), createItemMesh(type), dispose(),
+//   }
+// 场景内容：高度场地形 + 顶点色、三层植被（风摆）、可进入民房/谷仓、26m 输电塔与悬链电缆、
+// 木栅栏/边界链网/远处树墙、程序化天空+云+PMREM 环境、太阳软阴影、ACES+Bloom+调色后期、拾取物模型。
+// 所有地形高度、布局、碰撞数据一律来自 shared/world.js，本模块不复制任何共享常量。
 import * as THREE from 'three';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { WORLD, TERRAIN, BOUNDARY, SPAWNS } from '../shared/map.js';
-
-// 按 kind 分区配色：body=侧面主体，top=顶面，edge=描边，base=底部裙边
-const PALETTE = {
-  platform: { body: 0xcfe0ee, top: 0x8fd0e8, edge: 0x4d90b4, base: 0x9fb8cc },
-  arena:    { body: 0xf0dfc8, top: 0xf2b96e, edge: 0xb07d3c, base: 0xcbb193 },
-  wall:     { body: 0xd8d6ee, top: 0xa6a8e8, edge: 0x6f74b8, base: 0xa9a7c6 },
-};
-
-const SHADOW_SIZE = 1024;
-
-// 地面棋盘 + 细网格（Canvas 生成，避免大量几何）
-function makeGroundTexture() {
-  if (typeof document === 'undefined') return null;
-  const c = document.createElement('canvas');
-  c.width = c.height = 256;
-  const ctx = c.getContext('2d');
-  ctx.fillStyle = '#e9f0f8';
-  ctx.fillRect(0, 0, 256, 256);
-  ctx.fillStyle = '#dee8f3';
-  ctx.fillRect(0, 0, 128, 128);
-  ctx.fillRect(128, 128, 128, 128);
-  ctx.strokeStyle = 'rgba(110,145,180,0.28)';
-  ctx.lineWidth = 1;
-  for (let i = 0; i <= 256; i += 32) {
-    ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, 256); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(256, i); ctx.stroke();
-  }
-  const tex = new THREE.CanvasTexture(c);
-  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(WORLD.size / 10, WORLD.size / 10);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
-
-// 软件渲染（SwiftShader / llvmpipe 等）下关闭阴影：填充与深度开销极高，收益却很低
-function isSoftwareRenderer(renderer) {
-  try {
-    const gl = renderer.getContext();
-    const ext = gl.getExtension('WEBGL_debug_renderer_info');
-    const name = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || '') : '';
-    return /swiftshader|software|llvmpipe|basic render/i.test(name);
-  } catch { return false; }
-}
-
-// 垂直渐变天空：上方浅蓝 → 地平线近白
-function makeSkyTexture() {
-  if (typeof document === 'undefined') return null;
-  const c = document.createElement('canvas');
-  c.width = 4; c.height = 256;
-  const ctx = c.getContext('2d');
-  const g = ctx.createLinearGradient(0, 0, 0, 256);
-  g.addColorStop(0.0, '#9fc9e8');
-  g.addColorStop(0.45, '#cfe4f5');
-  g.addColorStop(1.0, '#f2f7fb');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, 4, 256);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
+import { SUN, WORLD } from './world/shared.js';
+import {
+  resolveQuality, presetOf, isQuality, isSoftwareRenderer,
+} from './world/quality.js';
+import { createSky } from './world/sky.js';
+import { createLighting } from './world/lighting.js';
+import { createTerrain } from './world/terrain.js';
+import { createBuildings } from './world/buildings.js';
+import { createPylons } from './world/pylons.js';
+import { createProps } from './world/props.js';
+import { createVegetation } from './world/vegetation.js';
+import { createItemFactory } from './world/items.js';
+import { createPost } from './world/post.js';
 
 export function buildWorld(scene, renderer, opts = {}) {
-  const raycastTargets = [];
+  if (!scene) throw new Error('buildWorld: 需要 THREE.Scene');
 
-  // ---------- 天空 / 雾 ----------
-  const sky = makeSkyTexture();
-  if (sky) scene.background = sky;
-  else scene.background = new THREE.Color(0xcfe4f5);
-  scene.fog = new THREE.Fog(0xdceaf6, 60, 190);
+  const soft = opts.soft != null ? !!opts.soft : isSoftwareRenderer(renderer);
+  let quality = resolveQuality({ ...opts, soft }, renderer);
+  let preset = presetOf(quality);
 
-  // ---------- 灯光：半球补光 + 主光（投影） + 环境 ----------
-  scene.add(new THREE.HemisphereLight(0xffffff, 0xb9d2e8, 0.85));
-  const sun = new THREE.DirectionalLight(0xfff6e8, 1.5);
-  sun.position.set(38, 62, 26);
-  const softRenderer = opts.soft != null ? !!opts.soft : (renderer ? isSoftwareRenderer(renderer) : false);
-  if (renderer && !softRenderer) {
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    sun.castShadow = true;
-    const s = WORLD.half + 6;
-    sun.shadow.camera.left = -s;
-    sun.shadow.camera.right = s;
-    sun.shadow.camera.top = s;
-    sun.shadow.camera.bottom = -s;
-    sun.shadow.camera.near = 1;
-    sun.shadow.camera.far = 180;
-    sun.shadow.mapSize.set(SHADOW_SIZE, SHADOW_SIZE);
-    sun.shadow.bias = -0.0006;
-    sun.shadow.normalBias = 0.02;
-  }
-  scene.add(sun);
-  scene.add(new THREE.AmbientLight(0xffffff, 0.42));
-  // 反向补光（冷色），减少阴影死黑
-  const fill = new THREE.DirectionalLight(0xbcd8f5, 0.35);
-  fill.position.set(-30, 26, -34);
-  scene.add(fill);
-
-  // ---------- 地面 ----------
-  const groundTex = makeGroundTexture();
-  const floor = new THREE.Mesh(
-    new THREE.PlaneGeometry(WORLD.size, WORLD.size),
-    new THREE.MeshStandardMaterial({ color: 0xffffff, map: groundTex || null, roughness: 0.95, metalness: 0.02 })
-  );
-  floor.rotation.x = -Math.PI / 2;
-  floor.receiveShadow = true;
-  scene.add(floor);
-  raycastTargets.push(floor);
-
-  // 中心区域柔光标记（浅色圆盘，帮助定位中央擂台）
-  const disc = new THREE.Mesh(
-    new THREE.CircleGeometry(11, 48),
-    new THREE.MeshBasicMaterial({ color: 0xf3c98f, transparent: true, opacity: 0.22 })
-  );
-  disc.rotation.x = -Math.PI / 2;
-  disc.position.y = 0.015;
-  scene.add(disc);
-
-  // ---------- 地形：底座 + 主体 + 顶面 + 描边 ----------
-  const mtx = new THREE.Matrix4();
-  const groups = { body: {}, top: {}, edge: {}, base: {} };
-  for (const kind of ['platform', 'arena', 'wall']) {
-    groups.body[kind] = [];
-    groups.top[kind] = [];
-    groups.edge[kind] = [];
-    groups.base[kind] = [];
-  }
-
-  for (const o of TERRAIN) {
-    const kind = PALETTE[o.kind] ? o.kind : 'platform';
-
-    // 主体
-    const body = new THREE.BoxGeometry(o.w, o.h, o.d);
-    mtx.makeTranslation(o.x, o.h / 2, o.z);
-    body.applyMatrix4(mtx);
-    groups.body[kind].push(body);
-
-    // 顶部亮面（略内缩，形成"倒角"层次）
-    const top = new THREE.BoxGeometry(o.w - 0.16, 0.07, o.d - 0.16);
-    mtx.makeTranslation(o.x, o.h + 0.035, o.z);
-    top.applyMatrix4(mtx);
-    groups.top[kind].push(top);
-
-    // 底部裙边（略外扩，压住地面接缝）
-    const base = new THREE.BoxGeometry(o.w + 0.24, 0.1, o.d + 0.24);
-    mtx.makeTranslation(o.x, 0.05, o.z);
-    base.applyMatrix4(mtx);
-    groups.base[kind].push(base);
-
-    // 描边
-    const edge = new THREE.EdgesGeometry(new THREE.BoxGeometry(o.w, o.h, o.d));
-    edge.applyMatrix4(mtx);
-    groups.edge[kind].push(edge);
-  }
-
-  const bodyMat = (c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.72, metalness: 0.12 });
-  const topMat = (c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.55, metalness: 0.18 });
-  const edgeMat = (c) => new THREE.LineBasicMaterial({ color: c, transparent: true, opacity: 0.85 });
-
-  const addMerged = (geos, mat, { raycast = false, line = false, shadow = false } = {}) => {
-    if (!geos.length) return null;
-    const merged = mergeGeometries(geos, false);
-    const obj = line ? new THREE.LineSegments(merged, mat) : new THREE.Mesh(merged, mat);
-    if (!line) {
-      obj.castShadow = shadow;
-      obj.receiveShadow = shadow;
+  // 各向异性过滤上限（地面法线、链网纹理用）
+  let anisotropy = 1;
+  try {
+    if (renderer && renderer.capabilities && renderer.capabilities.getMaxAnisotropy) {
+      anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy() || 1);
     }
-    scene.add(obj);
-    if (raycast) raycastTargets.push(obj);
-    return obj;
+  } catch (e) { anisotropy = 1; }
+
+  // ---------- 基础场景状态 ----------
+  scene.background = new THREE.Color(SUN.fogColor);
+  scene.fog = null;
+
+  // ---------- 光照（先设置 renderer 的 ACES / 阴影开关）----------
+  const lighting = createLighting(scene, { renderer, preset });
+
+  // ---------- 天空 + 云 + PMREM 环境贴图 ----------
+  const sky = createSky(scene, { renderer, preset, anisotropy });
+
+  // ---------- 地形 ----------
+  let terrain = createTerrain({ preset, anisotropy });
+  scene.add(terrain.group);
+
+  // ---------- 建筑 / 输电塔 / 道具 / 植被 ----------
+  const buildings = createBuildings({ preset, anisotropy });
+  scene.add(buildings.group);
+  const pylons = createPylons({ preset, anisotropy });
+  scene.add(pylons.group);
+  const props = createProps({ preset, anisotropy });
+  scene.add(props.group);
+  const vegetation = createVegetation({ preset });
+  scene.add(vegetation.group);
+
+  // ---------- 拾取物工厂（Lead 通过 createItemMesh 创建地面道具）----------
+  const items = createItemFactory({ preset });
+
+  // ---------- 后期 ----------
+  let post = null;
+  if (preset.post && renderer) {
+    try {
+      post = createPost(scene, renderer, preset);
+    } catch (e) {
+      post = null;
+    }
+  }
+
+  // 供本地视觉射线使用的静态目标（地形网格 + 房屋 / 塔 / 岩石 / 车辆 / 工事合并网格）
+  // 注意：该数组引用会一直保持，质量档变化重建地形时原地更新内容，Lead 可以长期持有。
+  const raycastTargets = [];
+  function refreshRaycastTargets() {
+    raycastTargets.length = 0;
+    raycastTargets.push(
+      ...terrain.raycastTargets,
+      ...buildings.raycastTargets,
+      ...pylons.raycastTargets,
+      ...props.raycastTargets
+    );
+  }
+  refreshRaycastTargets();
+
+  // ---------- 逐帧状态 ----------
+  let time = 0;
+  let lastDt = 0.016;
+  let lastCamera = null;
+  const _shadowTarget = new THREE.Vector3();
+  const _playerPos = new THREE.Vector3();
+
+  function resolveTargetPos(ctx) {
+    if (ctx.playerPos && Number.isFinite(ctx.playerPos.x)) {
+      _playerPos.set(ctx.playerPos.x, ctx.playerPos.y || 0, ctx.playerPos.z);
+      return _playerPos;
+    }
+    const cam = ctx.camera || lastCamera;
+    if (cam) {
+      _playerPos.set(cam.position.x, Math.max(0, cam.position.y - WORLD.eyeHeight), cam.position.z);
+      return _playerPos;
+    }
+    return null;
+  }
+
+  function update(dt = 0.016, ctx = {}) {
+    const step = Number.isFinite(dt) ? Math.min(Math.max(dt, 0), 0.1) : 0.016;
+    time += step;
+    lastDt = step;
+    const camera = ctx.camera || lastCamera;
+    if (camera) lastCamera = camera;
+
+    // 太阳阴影相机跟随玩家（按阴影纹素对齐，避免抖动）
+    const target = resolveTargetPos(ctx);
+    lighting.update(step, target);
+
+    // 天空/云跟随相机
+    sky.update(step, camera);
+
+    // 植被风摆 + 玩家压草
+    vegetation.update(step, target);
+
+    // 拾取物浮动 / 旋转 / 标记脉动
+    items.update(step);
+  }
+
+  function render(camera) {
+    if (!renderer) return;
+    if (camera) lastCamera = camera;
+    if (!lastCamera) return;
+    if (post) {
+      post.render(lastCamera, lastDt);
+    } else {
+      renderer.render(scene, lastCamera);
+    }
+  }
+
+  // ---------- 画质切换（植被密度 / 距离 / 阴影 / 后期 / 地形分辨率）----------
+  function setQuality(next) {
+    let q = next;
+    if (q === 'auto') q = isSoftwareRenderer(renderer) ? 'low' : 'high';
+    if (!isQuality(q)) return quality;
+    if (q === quality) return quality;
+
+    const prev = preset;
+    quality = q;
+    preset = presetOf(q);
+
+    // 地形网格分辨率随档位变化：重建内圈+外圈（raycastTargets 原地替换）
+    if (preset.terrainSegments !== prev.terrainSegments || preset.outerMilestones !== prev.outerMilestones) {
+      const rebuilt = createTerrain({ preset, anisotropy });
+      scene.remove(terrain.group);
+      terrain.dispose();
+      terrain = rebuilt;
+      scene.add(terrain.group);
+      refreshRaycastTargets();
+    }
+
+    lighting.setQuality(preset);
+    vegetation.setQuality(preset);
+    buildings.setQuality(preset);
+    sky.setQuality(preset);
+    if (post) post.applyPreset(preset);
+    return quality;
+  }
+
+  // ---------- 资源释放 ----------
+  function dispose() {
+    if (post) { post.dispose(); post = null; }
+    items.dispose();
+    vegetation.dispose();
+    props.dispose();
+    pylons.dispose();
+    buildings.dispose();
+    terrain.dispose();
+    sky.dispose();
+    lighting.dispose();
+    raycastTargets.length = 0;
+    if (renderer && renderer.shadowMap) renderer.shadowMap.enabled = false;
+  }
+
+  // ---------- 对外对象 ----------
+  const world = {
+    raycastTargets,
+    sun: lighting.sun,
+    hemi: lighting.hemi,
+    get quality() { return quality; },
+    get preset() { return preset; },
+    get soft() { return soft; },
+    get time() { return time; },
+    fog: lighting.fog,
+    sunDir: lighting.sunDir,
+    sky,
+    get terrain() { return terrain; },
+    buildings,
+    pylons,
+    props,
+    vegetation,
+    items,
+    get post() { return post; },
+    createItemMesh: (type) => items.createItemMesh(type),
+    forgetItem: (group) => items.forget(group),
+    setQuality,
+    update,
+    render,
+    dispose,
+    // 调试/自测：统计场景静态 draw call（按材质/对象数粗略估计）
+    stats() {
+      let meshes = 0, instanced = 0, lines = 0, triangles = 0;
+      scene.traverse((o) => {
+        if (o.isInstancedMesh) {
+          instanced++;
+          const g = o.geometry;
+          if (g && g.index) triangles += (g.index.count / 3) * o.count;
+          else if (g && g.attributes.position) triangles += (g.attributes.position.count / 3) * o.count;
+        } else if (o.isMesh) {
+          meshes++;
+          const g = o.geometry;
+          if (g && g.index) triangles += g.index.count / 3;
+          else if (g && g.attributes.position) triangles += g.attributes.position.count / 3;
+        } else if (o.isLineSegments) {
+          lines++;
+        }
+      });
+      return { meshes, instanced, lines, triangles: Math.round(triangles), quality };
+    },
   };
 
-  for (const kind of ['platform', 'arena', 'wall']) {
-    const pal = PALETTE[kind];
-    addMerged(groups.base[kind], bodyMat(pal.base), { shadow: false });
-    addMerged(groups.body[kind], bodyMat(pal.body), { raycast: true, shadow: true });
-    addMerged(groups.top[kind], topMat(pal.top), { raycast: true, shadow: true });
-    addMerged(groups.edge[kind], edgeMat(pal.edge), { line: true });
-  }
+  // 首帧阴影/天空状态
+  lighting.update(0, null);
+  vegetation.update(0, null);
 
-  // ---------- 装饰：掩体墙霓虹条 / 擂台四角光柱 ----------
-  const accentGeos = [];
-  for (const o of TERRAIN) {
-    if (o.kind === 'wall') {
-      for (const sx of [-1, 1]) {
-        const bar = new THREE.BoxGeometry(0.09, o.h - 0.5, 0.09);
-        mtx.makeTranslation(o.x + sx * (o.w / 2 - 0.26), 0.25 + (o.h - 0.5) / 2, o.z);
-        bar.applyMatrix4(mtx);
-        accentGeos.push(bar);
-      }
-    }
-  }
-  addMerged(accentGeos, new THREE.MeshBasicMaterial({ color: 0x7f8fd8 }));
-
-  const arena = TERRAIN.find((o) => o.kind === 'arena');
-  if (arena) {
-    const postGeos = [];
-    const hw = arena.w / 2 - 0.35, hd = arena.d / 2 - 0.35;
-    for (const sx of [-1, 1]) {
-      for (const sz of [-1, 1]) {
-        const g = new THREE.CylinderGeometry(0.09, 0.09, 0.7, 8);
-        mtx.makeTranslation(arena.x + sx * hw, arena.h + 0.35, arena.z + sz * hd);
-        g.applyMatrix4(mtx);
-        postGeos.push(g);
-      }
-    }
-    addMerged(postGeos, new THREE.MeshBasicMaterial({ color: 0xf0a860 }));
-  }
-
-  // ---------- 边界墙：半透明体 + 顶部亮条 ----------
-  const wallGeos = [], wallTopGeos = [];
-  for (const o of BOUNDARY) {
-    const g = new THREE.BoxGeometry(o.w, o.h, o.d);
-    mtx.makeTranslation(o.x, o.h / 2, o.z);
-    g.applyMatrix4(mtx);
-    wallGeos.push(g);
-    const tg = new THREE.BoxGeometry(o.w, 0.12, o.d);
-    mtx.makeTranslation(o.x, o.h, o.z);
-    tg.applyMatrix4(mtx);
-    wallTopGeos.push(tg);
-  }
-  addMerged(wallGeos, new THREE.MeshBasicMaterial({ color: 0x9dc4ea, transparent: true, opacity: 0.28 }));
-  addMerged(wallTopGeos, new THREE.MeshBasicMaterial({ color: 0x5f92c8 }));
-
-  // ---------- 边界内侧霓虹柱（远景视觉锚点） ----------
-  const pillarGeos = [], capGeos = [];
-  const PI = WORLD.half - 3.5;
-  for (const [px, pz] of [[-PI, -PI], [PI, -PI], [-PI, PI], [PI, PI]]) {
-    const g = new THREE.BoxGeometry(0.5, 6.5, 0.5);
-    mtx.makeTranslation(px, 3.25, pz);
-    g.applyMatrix4(mtx);
-    pillarGeos.push(g);
-    const c = new THREE.BoxGeometry(0.8, 0.35, 0.8);
-    mtx.makeTranslation(px, 6.65, pz);
-    c.applyMatrix4(mtx);
-    capGeos.push(c);
-  }
-  addMerged(pillarGeos, bodyMat(0xc6d4e4));
-  addMerged(capGeos, new THREE.MeshBasicMaterial({ color: 0x6fb4e8 }));
-
-  // ---------- 出生点光柱 ----------
-  const pillGeos = [];
-  for (const s of SPAWNS) {
-    const g = new THREE.CylinderGeometry(0.14, 0.14, 0.9, 8);
-    mtx.makeTranslation(s.x, 0.45, s.z);
-    g.applyMatrix4(mtx);
-    pillGeos.push(g);
-  }
-  addMerged(pillGeos, new THREE.MeshBasicMaterial({ color: 0x8fc0ea, transparent: true, opacity: 0.55 }));
-
-  return { raycastTargets, sun, softRenderer };
+  return world;
 }

@@ -1,14 +1,17 @@
 {
-  "name": "neon-arena",
+  "name": "suburban-front",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
-  "description": "网页版 3D 多人对战射击小游戏（低多边形赛博风，Three.js + ws）",
+  "description": "网页版 3D 多人射击游戏：写实郊区战场 + 据点争夺（Three.js + ws）",
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "build": "vite build",
     "start": "node server/server.js",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node scripts/smoke.mjs",
+    "test:world": "node scripts/validate-world.mjs",
+    "test:browser": "node scripts/browser-test.mjs"
   },
   "engines": {
     "node": ">=18"

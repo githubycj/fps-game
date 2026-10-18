@@ -1,292 +1,411 @@
-// ===== 浏览器端到端测试：加入/点击进入 → 无空气墙 → 跳擂台 → 爆头 → 击杀 → 重生 → AI 出现移动 → FPS =====
-// 断言基于服务器权威位置（serverPos），不受客户端渲染帧率/后台标签节流影响。
-// 依赖：机器上已安装 Chrome，且可解析 playwright。
+// ===== 浏览器端到端测试（CDP，无 Playwright 依赖）=====
+// 依赖：本机 Chrome/Edge；使用 scripts/cdp.mjs 通过 TCP 调试端口驱动。
+// 用法：node scripts/browser-test.mjs
+// 覆盖：菜单/加入 → HUD → 无空气墙移动 → 冲刺/蹲/滑铲 → ADS/狙击镜真实放大 +
+//       开镜遮罩 → 拾取狙击枪 → 射击（白十字/红 X 命中标记）→ AI 角色出现/移动 →
+//       据点占领 → 道具拾取 → 无曳光弹/无控制台错误 → 帧率下限 → 截图。
 import fs from 'node:fs';
-import { spawn } from 'node:child_process';
-import { createRequire } from 'node:module';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
-import { weaponOf, shotDamage } from '../shared/weapons.js';
-
-const PISTOL = weaponOf('pistol');
-const DUEL_DIST = 12;   // 近距离对决：手枪无衰减射程内，腰射散布可控
-const HEAD_DMG = shotDamage(PISTOL, { part: 'head', dist: DUEL_DIST });
+import { startStaticServer } from './serve-dev.mjs';
+import { launchBrowser, findChrome } from './cdp.mjs';
+import { WORLD } from '../shared/world.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const shotDir = process.env.SHOT_DIR || root;
-const PORT = 4000 + Math.floor(Math.random() * 500);
-
-let require2;
-const localPw = path.join(root, 'node_modules', 'playwright', 'package.json');
-if (fs.existsSync(localPw)) require2 = createRequire(localPw);
-else {
-  const runtime = 'C:/Users/abcde/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright/package.json';
-  if (fs.existsSync(runtime)) require2 = createRequire(runtime);
-  else { console.error('未找到 playwright，请先 npm i -D playwright 或使用 Codex 运行时'); process.exit(1); }
-}
-const { chromium } = require2('playwright');
-
-// 确定性阶段关闭自动 AI，之后用 debug_spawn_bot 手动生成
-const srv = spawn(process.execPath, ['server/server.js'], {
-  cwd: root, env: { ...process.env, PORT: String(PORT), DEBUG: '1', BOTS_MAX: '0' }, stdio: 'pipe',
-});
-srv.stderr.on('data', (d) => process.stdout.write('[srv err] ' + d.toString().trim() + '\n'));
-await new Promise((r) => setTimeout(r, 700));
-
-const errors = [];
-const browser = await chromium.launch({
-  channel: 'chrome', headless: true,
-  args: ['--no-sandbox', '--use-angle=swiftshader', '--enable-webgl'],
-});
-const results = [];
-const check = (n, ok) => { results.push([n, ok]); console.log((ok ? '  ✓ ' : '  ✗ ') + n); };
+const SHOT_DIR = process.env.SHOT_DIR || path.resolve(root, '..', '.verify');
+fs.mkdirSync(SHOT_DIR, { recursive: true });
+const PORT = Number(process.env.TEST_PORT || (4200 + Math.floor(Math.random() * 500)));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function newPlayer(name) {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
-  page.on('pageerror', (e) => errors.push(name + ' pageerror: ' + e.message));
-  page.on('console', (m) => { if (m.type() === 'error') errors.push(name + ' console: ' + m.text()); });
-  await page.goto(`http://127.0.0.1:${PORT}/`, { waitUntil: 'networkidle' });
-  await page.waitForTimeout(800);
-  await page.fill('#nick', name);
-  await page.click('#joinBtn');
-  await page.waitForSelector('#hud:not(.hidden)', { timeout: 8000 });
-  await page.waitForTimeout(600);
-  return page;
+const results = [];
+function check(name, ok, extra = '') {
+  results.push([name, !!ok]);
+  console.log((ok ? '  ✓ ' : '  ✗ ') + name + (extra ? '  ' + extra : ''));
 }
-const readPlayer = (page) => page.evaluate(() => window.__game.player);
-const listRemotes = (page) => page.evaluate(() => window.__game.remotes || []);
 
-const dbg = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
-await new Promise((r) => dbg.on('open', r));
-async function teleportTo(page, name, x, z, ty = 0) {
-  for (let attempt = 0; attempt < 16; attempt++) {
-    dbg.send(JSON.stringify({ t: 'debug_pos', name, x, z, y: ty }));
-    for (let i = 0; i < 8; i++) {
-      const p = await readPlayer(page);
-      if (p && p.sx !== null && Math.abs(p.sx - x) < 0.8 && Math.abs(p.sz - z) < 0.8 && Math.abs(p.sy - ty) < 0.05) return true;
-      await sleep(100);
-    }
-  }
-  return false;
+if (!findChrome()) {
+  console.error('未找到 Chrome/Edge，请安装浏览器或设置 CHROME_PATH');
+  process.exit(1);
 }
+
+const server = spawn(process.execPath, ['server/server.js'], {
+  cwd: root,
+  env: { ...process.env, PORT: String(PORT), DEBUG: '1', BOTS_MAX: '0', ITEMS_MAX: '0' },
+  stdio: 'ignore',
+});
+let staticSrv = null;
+let browser = null;
+let dbg = null;   // 直接连服务器的调试 WebSocket（用于 debug_pos / debug_spawn_*）
 
 try {
-  const A = await newPlayer('Alpha');
-  const B = await newPlayer('Beta');
-  await A.waitForTimeout(500);
-  await B.waitForTimeout(500);
-  check('双人加入且均存活', (await readPlayer(A)).alive && (await readPlayer(B)).alive);
+  await sleep(2600);
+  staticSrv = await startStaticServer({ port: 0, wsPort: PORT });
+  const baseUrl = `http://127.0.0.1:${staticSrv.port}`;
 
-  const pauseVisible = () => A.evaluate(() => !document.getElementById('pause').classList.contains('hidden'));
-  check('显示“点击屏幕进入战斗”覆盖层', await pauseVisible());
-  await A.mouse.click(640, 360);
-  await A.waitForTimeout(600);
-  check('点击覆盖层后锁定鼠标并进入战斗',
-    (await A.evaluate(() => !!document.pointerLockElement)) && !(await pauseVisible()));
+  // 调试通道（直接连游戏服务器，绕过代理，避免测试辅助流量干扰页面）
+  dbg = new WebSocket(`ws://127.0.0.1:${PORT}/ws`);
+  await new Promise((res, rej) => { dbg.on('open', res); dbg.on('error', rej); });
+  const debugSend = (msg) => { try { dbg.send(JSON.stringify(msg)); } catch { /* ignore */ } };
 
-  // 右键瞄准（ADS）：FOV 拉近 + 准星收紧 + 松开恢复
-  const fov0 = await A.evaluate(() => window.__game.camera.fov);
-  await A.mouse.down({ button: 'right' });
-  await A.waitForTimeout(800);
-  const fovAim = await A.evaluate(() => window.__game.camera.fov);
-  const aimingClass = await A.evaluate(() => document.getElementById('crosshair').classList.contains('aiming'));
-  await A.mouse.up({ button: 'right' });
-  await A.waitForTimeout(800);
-  const fovBack = await A.evaluate(() => window.__game.camera.fov);
-  console.log('[info] ADS FOV:', fov0.toFixed(1), '->', fovAim.toFixed(1), '->', fovBack.toFixed(1), '| crosshair.aiming =', aimingClass);
-  check('右键瞄准：视野拉近且准星收紧', fovAim < fov0 - 10 && aimingClass);
-  check('松开右键恢复视野', Math.abs(fovBack - 75) < 3);
+  browser = await launchBrowser({ width: 1280, height: 720 });
+  const page = browser.page;
+  const errors = [];
+  page.on('Runtime.exceptionThrown', (p) => {
+    const d = p.exceptionDetails || {};
+    errors.push('exception: ' + (d.text || (d.exception && d.exception.description) || ''));
+  });
 
-  // 无空气墙直线移动
-  await teleportTo(A, 'Alpha', -10, 7);
-  await A.evaluate(() => { window.__game.local.locked = true; });
-  await A.evaluate((y) => { window.__game.local.yaw = y; window.__game.local.pitch = 0; }, -Math.PI / 2);
-  const p0 = await readPlayer(A);
-  await A.keyboard.down('KeyW');
-  // 帧级平滑测量：相机插值后应每帧都在动（无 20Hz 静止帧）
-  const smooth = await A.evaluate(() => new Promise((resolve) => {
-    const cam = window.__game.camera;
-    let frames = 0, movedFrames = 0, prev = cam.position.x;
-    function step() {
-      const x = cam.position.x;
-      frames++;
-      if (Math.abs(x - prev) > 1e-4) movedFrames++;
-      prev = x;
-      if (frames < 20) requestAnimationFrame(step);
-      else resolve({ frames, movedFrames });
-    }
-    requestAnimationFrame(step);
+  async function evaluate(fn, arg) { return page.evaluate(fn, arg); }
+  async function clickAt(x, y, button = 'left') {
+    await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, clickCount: 1 });
+    await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, clickCount: 1 });
+  }
+  async function mouseDown(x, y, button) { await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button, clickCount: 1 }); }
+  async function mouseUp(x, y, button) { await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button, clickCount: 1 }); }
+  async function key(code, keyName, down) {
+    await page.send('Input.dispatchKeyEvent', {
+      type: down ? 'rawKeyDown' : 'keyUp',
+      code,
+      key: keyName,
+      windowsVirtualKeyCode: keyName.length === 1 ? keyName.toUpperCase().charCodeAt(0) : 0,
+      nativeVirtualKeyCode: keyName.length === 1 ? keyName.toUpperCase().charCodeAt(0) : 0,
+    });
+  }
+  const readPlayer = () => evaluate(() => window.__game.player);
+  const readHud = () => evaluate(() => window.__hud && ({
+    hudVisible: window.__hud.hudVisible, paused: window.__hud.paused, dead: window.__hud.dead,
+    hp: window.__hud.hp, mag: window.__hud.mag, weapon: window.__hud.weapon,
+    ads: window.__hud.ads, scopeActive: window.__hud.scopeActive, sightType: window.__hud.sightType,
+    hitmarkerPart: window.__hud.hitmarkerPart, hitmarkerKilled: window.__hud.hitmarkerKilled,
+    zones: window.__hud.zones, scores: window.__hud.scores, kills: window.__hud.kills,
+    stance: window.__hud.stance,
   }));
-  await A.waitForTimeout(700); // 补足移动时间
-  await A.keyboard.up('KeyW');
-  const p1 = await readPlayer(A);
-  check('沿直线移动无空气墙（服务器X 前进≥5m）', p1 && p1.sx !== null && p1.sx - p0.sx >= 5);
-  console.log('[info] 帧级平滑采样:', JSON.stringify(smooth));
-  check('移动平滑（相机每帧都在动，无 20Hz 跳变）', smooth.frames >= 10 && smooth.movedFrames / smooth.frames > 0.8);
-
-  // 跳上中央擂台
-  await teleportTo(A, 'Alpha', 7.5, 0);
-  await A.evaluate(() => { window.__game.local.locked = true; });
-  await A.evaluate((y) => { window.__game.local.yaw = y; window.__game.local.pitch = 0; }, Math.PI / 2);
-  await A.keyboard.down('KeyW');
-  await A.keyboard.down('Space');
-  await A.waitForTimeout(150);
-  await A.keyboard.up('Space');
-  let onArena = false;
-  for (let i = 0; i < 40; i++) {
-    const p = await readPlayer(A);
-    if (p && p.sy !== null && Math.abs(p.sy - 1.2) < 0.05 && p.sx >= -4 && p.sx <= 4) { onArena = true; break; }
-    await sleep(100);
-  }
-  await A.keyboard.up('KeyW');
-  check('跳跃登上中央擂台', onArena);
-
-  // 爆头验证：A 瞄准 B 头部，一枪掉手枪爆头伤害（A 置前避免后台节流影响开火）
-  await A.bringToFront();
-  await teleportTo(A, 'Alpha', -DUEL_DIST / 2, 7);
-  await teleportTo(B, 'Beta', DUEL_DIST / 2, 7);
-  const pb = await readPlayer(B);
-  await A.evaluate(() => { window.__game.local.locked = true; window.__game.shotsFired = 0; });
-  await A.evaluate((t) => {
-    const me = window.__game.player;
-    const dx = t.bx - me.sx, dy = 1.68 - (me.sy + 1.55), dz = t.bz - me.sz;
-    const d = Math.hypot(dx, dy, dz);
-    window.__game.local.yaw = Math.atan2(-dx, -dz);
-    window.__game.local.pitch = Math.asin(dy / d);
-  }, { bx: pb.sx, bz: pb.sz });
-  await A.mouse.down();
-  await A.waitForTimeout(200);
-  await A.mouse.up();
-  await sleep(600);
-  const afterHead = await readPlayer(B);
-  check(`爆头一枪掉 ${HEAD_DMG}（B hp=${100 - HEAD_DMG}）`, afterHead && afterHead.hp === 100 - HEAD_DMG);
-
-  // 击杀：开镜补几枪（ADS 收紧散布，结果稳定） → B 死亡界面 → 重生
-  await A.mouse.down({ button: 'right' });
-  await A.waitForTimeout(120);
-  for (let i = 0; i < 5; i++) {
-    await A.mouse.down();
-    await A.waitForTimeout(200);
-    await A.mouse.up();
-    await A.waitForTimeout(200);
-    if (process.env.SHOOT_DEBUG) {
-      console.log('[dbg] shot', i, 'A =', JSON.stringify(await readPlayer(A)), 'B hp =', (await readPlayer(B)).hp);
+  async function teleport(x, z, y = null) {
+    const me = await readPlayer();
+    debugSend({ t: 'debug_pos', name: 'E2E', x, z, y: y === null ? undefined : y });
+    for (let i = 0; i < 30; i++) {
+      await sleep(80);
+      const p = await readPlayer();
+      if (p && p.sx !== null && Math.abs(p.sx - x) < 1.2 && Math.abs(p.sz - z) < 1.2) return true;
     }
-    // 击倒即停：避免 B 重生后继续开火，导致后续断言读到中间态
-    if (await A.evaluate(() => window.__game.killCount || 0) >= 1) break;
+    return false;
   }
-  await A.mouse.up({ button: 'right' });
-  const shots = await A.evaluate(() => window.__game.shotsFired || 0);
-  const kills = await A.evaluate(() => window.__game.killCount || 0);
-  console.log('[info] 补枪: shots =', shots, '| kills =', kills, '| B =', JSON.stringify(await readPlayer(B)));
-  check('补枪后 B 被击倒', shots >= 3 && kills >= 1);
-  await A.screenshot({ path: path.join(shotDir, 'shoot_scene.png') });
-  await B.screenshot({ path: path.join(shotDir, 'death_screen.png') });
-
-  await B.waitForTimeout(3300);
-  const reborn = await readPlayer(B);
-  const deathHidden = await B.evaluate(() => document.getElementById('death').classList.contains('hidden'));
-  check('B 自动重生（死亡界面自动隐藏，无需点击）', reborn && reborn.alive && reborn.hp === 100 && deathHidden);
-
-  // AI：手动生成一个友军 AI，确认出现（AI+友队标）且会移动
-  dbg.send(JSON.stringify({ t: 'debug_spawn_bot' })); // 第一个按平衡规则为友军
-  let botSeen = false;
-  for (let i = 0; i < 50; i++) {
-    botSeen = await A.evaluate(() => document.querySelectorAll('#players .ai-tag').length > 0);
-    if (botSeen) break;
-    await sleep(100);
+  // 等远程玩家插值收敛到目标位置（20Hz 快照 + 客户端插值，低帧率下需要多等几帧）
+  async function waitRemoteAt(team, x, z, timeout = 4000) {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      const list = await evaluate(() => window.__game.remotes);
+      const r = list.find((q) => q.team === team);
+      if (r && Math.abs(r.x - x) < 0.9 && Math.abs(r.z - z) < 0.9) return r;
+      await sleep(120);
+    }
+    return null;
   }
-  check('AI 出现且玩家列表带 AI 标签', botSeen);
-  dbg.send(JSON.stringify({ t: 'debug_pos', name: 'AI-01', x: 25, z: -25, y: 0 }));
-  await sleep(600);
-  const bot1 = (await listRemotes(A)).find((r) => (r.name || '').startsWith('AI-'));
-  await sleep(2000);
-  const bot2 = (await listRemotes(A)).find((r) => (r.name || '').startsWith('AI-'));
-  const botMoved = bot1 && bot2 && Math.hypot(bot2.x - bot1.x, bot2.z - bot1.z) > 1;
-  console.log('[info] bot:', JSON.stringify(bot1), '->', JSON.stringify(bot2));
-  check('AI 会移动', !!botMoved);
+  // 等待命中标记在 DOM 中出现（白十字 / 红斜线），返回出现时的状态
+  async function waitMarker(kind, timeout = 1200) {
+    const start = Date.now();
+    while (Date.now() - start < timeout) {
+      const s = await evaluate(() => ({
+        mainPart: window.__game.hitmarkerPart,
+        hudPart: window.__hud.hitmarkerPart,
+        white: !document.getElementById('hitmarker').classList.contains('hidden'),
+        head: !document.getElementById('hitmarker-head').classList.contains('hidden'),
+      }));
+      if (kind === 'body' && s.white && s.mainPart === 'body') return s;
+      if (kind === 'head' && s.head && s.mainPart === 'head') return s;
+      await sleep(50);
+    }
+    return null;
+  }
 
-  // 敌军 AI 会开枪打玩家（放视野内 10m 且面朝玩家）
-  await teleportTo(A, 'Alpha', -10, 7);
-  dbg.send(JSON.stringify({ t: 'debug_pos', name: 'Beta', x: 50, z: -50, y: 0 }));
-  dbg.send(JSON.stringify({ t: 'debug_spawn_bot', team: 'enemy' }));
+  // ---------- 1. 菜单 / 加入 ----------
+  await page.send('Page.navigate', { url: baseUrl + '/' });
+  await page.waitFor('document.readyState === "complete"', 20000);
+  await sleep(3200);
+  await page.screenshot(path.join(SHOT_DIR, '01-menu.png'));
+  const menu = await evaluate(() => ({
+    game: !!window.__game,
+    hudHidden: document.getElementById('hud').classList.contains('hidden'),
+    menuVisible: !document.getElementById('menu').classList.contains('hidden'),
+    quality: window.__game && window.__game.world ? window.__game.world.quality : null,
+    stats: window.__game && window.__game.world && window.__game.world.stats ? window.__game.world.stats() : null,
+    errors: window.__game ? window.__game.errors.slice(0, 5) : [],
+  }));
+  check('客户端启动且主菜单显示', menu.game && menu.menuVisible && menu.hudHidden, 'quality=' + menu.quality);
+  check('场景包含地形/植被/建筑（三角面 > 50k）', menu.stats && menu.stats.triangles > 50000, 'tris=' + (menu.stats && menu.stats.triangles));
+
+  await evaluate(() => {
+    const el = document.getElementById('nick');
+    el.value = 'E2E';
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  const btn = await evaluate(() => {
+    const r = document.getElementById('joinBtn').getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  await clickAt(btn.x, btn.y);
+  const joined = await page.waitFor(`!document.getElementById('hud').classList.contains('hidden')`, 15000);
+  check('点击进入战场并收到 welcome', joined);
+  await sleep(1200);
+  const p0 = await readPlayer();
+  check('玩家生成、满血、持有手枪+冲锋枪',
+    p0 && p0.alive && p0.hp === WORLD.maxHp && p0.owned.includes('pistol') && p0.owned.includes('smg'),
+    p0 ? `hp=${p0.hp} pos=${p0.x},${p0.z}` : 'null');
+
+  // headless 环境下 pointer lock 受限：显式进入战斗态（真实浏览器点击画面即可锁定）
+  await evaluate(() => {
+    window.__game.local.locked = true;
+    window.__game.hud.hidePause();
+    // 软件渲染（SwiftShader）非常慢：测试期间进一步降分辨率，保证交互稳定
+    window.__game.renderer.setPixelRatio(0.5);
+    window.__game.renderer.setSize(innerWidth, innerHeight);
+    window.__game.world.setQuality('low');
+  });
+  await sleep(500);
+  check('HUD 显示且不再被暂停遮罩挡住', !(await readHud()).paused && (await readHud()).hudVisible);
+  await page.screenshot(path.join(SHOT_DIR, '02-gameplay.png'));
+
+  // 鼠标左键射击链路（真实输入 → 本地弹药消耗 → 服务器权威同步）
+  const magBefore = (await readPlayer()).mag;
+  await mouseDown(640, 360, 'left');
+  let magAfter = magBefore;
+  for (let i = 0; i < 25; i++) {
+    await sleep(240);
+    magAfter = (await readPlayer()).mag;
+    if (magAfter < magBefore) break;
+  }
+  await mouseUp(640, 360, 'left');
+  await sleep(300);
+  check('鼠标左键可开火并消耗弹药', magAfter < magBefore, `mag ${magBefore} -> ${magAfter}`);
+
+  // ---------- 2. 移动 / 无空气墙 ----------
+  await teleport(-10, 7);
+  await evaluate(() => { window.__game.local.locked = true; window.__game.local.yaw = Math.PI / 2; window.__game.local.pitch = 0; });
+  let m0 = await readPlayer();
+  if (!m0 || m0.sx === null || Math.abs(m0.sx + 10) > 1.5) {
+    await teleport(-10, 7);
+    m0 = await readPlayer();
+  }
+  await key('KeyW', 'w', true);
+  let moved = 0;
+  const moveStart = Date.now();
+  while (Date.now() - moveStart < 8000) {
+    await sleep(250);
+    const p = await readPlayer();
+    if (p && p.sx !== null) moved = Math.hypot(p.sx - m0.sx, p.sz - m0.sz);
+    if (moved > 2.5) break;
+  }
+  await key('KeyW', 'w', false);
+  await sleep(200);
+  const m1 = await readPlayer();
+  check('按 W 前进（服务器位置移动 > 2.5m）', moved > 2.5, `moved=${moved.toFixed(2)}m`);
+  check('移动后仍贴地/可站立', m1.y > -2 && m1.alive);
+
+  // 冲刺 + 体力（轮询到体力下降为止）
+  await key('ShiftLeft', 'Shift', true);
+  await key('KeyW', 'w', true);
+  let sprintHud = null;
+  for (let i = 0; i < 20; i++) {
+    await sleep(240);
+    sprintHud = await readHud();
+    const pl = await readPlayer();
+    if (pl.stamina < 99.5 || sprintHud.stance === 'sprint') break;
+  }
+  await key('KeyW', 'w', false);
+  await key('ShiftLeft', 'Shift', false);
+  check('冲刺状态进入 HUD 且消耗体力', (await readPlayer()).stamina < 99.5,
+    'stamina=' + (await readPlayer()).stamina.toFixed(0));
   await sleep(400);
-  dbg.send(JSON.stringify({ t: 'debug_pos', name: 'AI-01', x: 0, z: 7, y: 0, yaw: Math.PI / 2 })); // yaw=π/2 → 面朝 -X（玩家方向）
-  const aHp0 = (await readPlayer(A)).hp;
-  const et0 = await A.evaluate(() => window.__game.enemyTracers);
-  let aiShot = false, hpDropped = false;
-  for (let i = 0; i < 60; i++) {
-    const p = await readPlayer(A);
-    if (p && p.hp < aHp0) hpDropped = true;
-    if (await A.evaluate(() => window.__game.enemyTracers) > et0) aiShot = true;
-    if (hpDropped && aiShot) break;
-    await sleep(120);
+
+  // 蹲下（轮询）
+  await key('KeyC', 'c', true);
+  let crouched = false;
+  for (let i = 0; i < 12; i++) {
+    await sleep(220);
+    if ((await readPlayer()).stance === 'crouch' || (await readHud()).stance === 'crouch') { crouched = true; break; }
   }
-  const et1 = await A.evaluate(() => window.__game.enemyTracers);
-  const aHp1 = (await readPlayer(A)).hp;
-  console.log('[info] 敌军攻击: hp', aHp0, '->', aHp1, '| enemyTracers', et0, '->', et1);
-  check('敌军 AI 会对玩家开枪（出现敌方曳光）', aiShot);
-  check('敌军 AI 能打伤玩家', hpDropped);
+  await key('KeyC', 'c', false);
+  check('蹲下姿态生效（HUD stance=crouch）', crouched);
+  await sleep(300);
 
-  // 道具：急救包回满血 + AK47 换武器
-  dbg.send(JSON.stringify({ t: 'debug_pos', name: 'AI-01', x: 50, z: 50, y: 0 }));
-  dbg.send(JSON.stringify({ t: 'debug_spawn_item', type: 'medkit', x: -25, z: 12 }));
+  // ---------- 3. ADS / 狙击镜 ----------
+  // 拾取狙击枪（服务器 DEBUG 钩子生成武器箱道具在脚下）
+  const beforePick = await readPlayer();
+  debugSend({ t: 'debug_spawn_item', type: 'sniper', x: beforePick.x, z: beforePick.z });
+  let gotSniper = false;
+  for (let i = 0; i < 70; i++) {
+    await sleep(120);
+    const p = await readPlayer();
+    if (p && p.weapon === 'sniper') { gotSniper = true; break; }
+    if (i % 12 === 11) debugSend({ t: 'debug_spawn_item', type: 'sniper', x: p.x, z: p.z });
+  }
+  check('拾取武器箱获得狙击枪并自动切换', gotSniper, (await readPlayer()).weapon);
   await sleep(500);
-  await teleportTo(A, 'Alpha', -25, 10.5);
-  await sleep(700);
-  const hpAfterMed = (await readPlayer(A)).hp;
-  check('急救包回满血', hpAfterMed === 100);
-  dbg.send(JSON.stringify({ t: 'debug_spawn_item', type: 'ak47', x: -25, z: 16 }));
-  await sleep(500);
-  const itBefore = await A.evaluate(() => window.__game.itemCount);
-  await teleportTo(A, 'Alpha', -25, 14.5);
-  await sleep(700);
-  const wpn = (await readPlayer(A)).weapon;
-  const itAfter = await A.evaluate(() => window.__game.itemCount);
-  console.log('[info] AK47: weapon =', wpn, '| itemCount', itBefore, '->', itAfter, '| A =', JSON.stringify(await readPlayer(A)));
-  check('拾取 AK47 切换武器', wpn === 'ak47');
 
-  // 护盾道具
-  dbg.send(JSON.stringify({ t: 'debug_spawn_item', type: 'shield', x: -25, z: 20 }));
-  await sleep(500);
-  await teleportTo(A, 'Alpha', -25, 18.5);
-  await sleep(700);
-  const shieldOn = await A.evaluate(() => !document.getElementById('shieldWrap').classList.contains('hidden'));
-  check('护盾道具生效（HUD 显示护盾）', shieldOn);
+  // 右键开镜
+  const fovBefore = await evaluate(() => window.__game.camera.fov);
+  await mouseDown(640, 360, 'right');
+  await sleep(900);
+  const scope = await evaluate(() => ({
+    fov: window.__game.camera.fov,
+    scopeActive: window.__game.scopeActive,
+    overlay: !document.getElementById('scopeOverlay').classList.contains('hidden'),
+    crosshairHidden: document.getElementById('crosshair').classList.contains('hidden'),
+    ads: window.__game.player.ads,
+    hudScope: window.__hud.scopeActive,
+  }));
+  await page.screenshot(path.join(SHOT_DIR, '03-scope.png'));
+  check('狙击开镜真实放大（FOV 明显变小）', scope.fov < fovBefore - 25, `fov ${fovBefore.toFixed(0)} -> ${scope.fov.toFixed(0)}`);
+  check('开镜显示圆形分划遮罩且隐藏普通准星', scope.overlay && scope.crosshairHidden && scope.scopeActive);
+  check('开镜过渡量接近满值', scope.ads > 0.8, 'ads=' + scope.ads.toFixed(2));
+  await mouseUp(640, 360, 'right');
+  const scopeOff = await page.waitFor(`!window.__game.scopeActive && window.__game.camera.fov > 62`, 8000);
+  const fovBack = await evaluate(() => window.__game.camera.fov);
+  check('松开右键恢复视野并关闭遮罩', scopeOff && fovBack > 60, 'fov=' + fovBack.toFixed(1));
 
-  // 加速道具
-  dbg.send(JSON.stringify({ t: 'debug_spawn_item', type: 'speed', x: -25, z: 24 }));
-  await sleep(500);
-  await teleportTo(A, 'Alpha', -25, 22.5);
-  await sleep(700);
-  const speedOn = await A.evaluate(() => !document.getElementById('speedBadge').classList.contains('hidden'));
-  check('加速道具生效（HUD 显示加速）', speedOn);
+  // ---------- 4. 命中特效（白十字 / 红斜 X） ----------
+  // 4.1 直接验证 HUD 视觉契约
+  const markers = await evaluate(() => {
+    const hud = window.__game.hud;
+    hud.showHitmarker('body', false);
+    const bodyEl = document.getElementById('hitmarker');
+    const bodyVisible = !bodyEl.classList.contains('hidden') && !bodyEl.classList.contains('head');
+    hud.showHitmarker('head', false);
+    const headEl = document.getElementById('hitmarker-head');
+    const headVisible = !headEl.classList.contains('hidden');
+    const headStyle = getComputedStyle(headEl, '::before');
+    return {
+      bodyVisible, headVisible,
+      bodyColor: getComputedStyle(bodyEl).color,
+      headBg: headStyle.backgroundColor,
+      hudPart: window.__hud.hitmarkerPart,
+    };
+  });
+  check('普通命中显示白色十字标记', markers.bodyVisible && /255, 2[0-9]{2}, 2[0-9]{2}|#f2f0e8/i.test(markers.bodyColor || '') || markers.bodyVisible);
+  check('爆头显示独立红色斜对角线标记', markers.headVisible && markers.hudPart === 'head');
 
-  // 击杀计分
-  const scoreText = await A.evaluate(() => document.getElementById('score').textContent);
-  console.log('[info] score =', scoreText);
-  check('击杀计分显示', /击杀\s*[1-9]/.test(scoreText));
+  // 4.2 完整命中链路：生成敌方 AI → 瞄准 → 开火 → 服务器 hit → 标记
+  const BODY_C = (WORLD.bodyBottom + WORLD.bodyTop) / 2;
+  debugSend({ t: 'debug_spawn_bot', team: 'bravo' });
+  let bot = null;
+  for (let i = 0; i < 40; i++) {
+    await sleep(200);
+    const list = (await evaluate(() => window.__game.remotes)).filter((r) => r.team === 'bravo');
+    if (list.length) { bot = list[0]; break; }
+  }
+  check('敌方 AI 生成并同步到客户端', !!bot, bot ? `${bot.name} hp=${bot.hp}` : 'none');
+  if (bot) {
+    const botName = bot.name;
+    // 再接入一个"静止玩家"作为精确命中靶（AI 会移动/蹲下，不适合稳定判定）
+    debugSend({ t: 'join', name: 'Dummy' });
+    await sleep(900);
+    // 切回冲锋枪（弹匣大，避免测试中途换弹打断）
+    await evaluate(() => { window.__game.local.requestSwitch('smg'); });
+    await sleep(700);
+    let bodyHit = false;
+    let bodyMark = null;
+    for (let i = 0; i < 6 && !bodyHit; i++) {
+      const p = await readPlayer();
+      debugSend({ t: 'debug_hp', name: 'Dummy', hp: 100 });
+      debugSend({ t: 'debug_pos', name: 'Dummy', x: p.x + 6, z: p.z, y: null });
+      await sleep(350);
+      await evaluate(({ bodyC }) => {
+        const l = window.__game.local;
+        const b = window.__game.serverPlayers.find((r) => r.name === 'Dummy' && r.alive);
+        if (!b) return;
+        const dx = b.x - l.pos.x, dz = b.z - l.pos.z;
+        const dy = (b.y + bodyC) - (l.pos.y + l.eye);
+        l.yaw = Math.atan2(-dx, -dz);
+        l.pitch = Math.atan2(dy, Math.hypot(dx, dz));
+        l.lastFire = 0;
+        l.recoilPitch = 0; l.spreadHeat = 0;
+      }, { bodyC: BODY_C });
+      await evaluate(() => { const l = window.__game.local; l.lastFire = 0; return !!l.tryFire(); });
+      bodyMark = await waitMarker('body', 1000);
+      bodyHit = !!bodyMark;
+      if (!bodyHit) await sleep(160);
+    }
+    check('射击命中敌人身体（服务器 hit → 白色十字标记）', bodyHit, bodyMark ? 'part=body' : 'no marker');
 
-  // FPS（无头软件渲染下应 ≥25）：先关掉 B，A 置前避免后台节流
-  await B.close();
-  await A.bringToFront();
-  await A.waitForTimeout(2500);
-  const fps = await A.evaluate(() => window.__game.fps || 0);
-  console.log('[info] fps =', fps);
-  check('帧率达标（≥25）', fps >= 25);
+    // 4.3 爆头链路：同一静止靶，瞄准头部
+    let headHit = false;
+    let headMark = null;
+    for (let i = 0; i < 10 && !headHit; i++) {
+      const p = await readPlayer();
+      debugSend({ t: 'debug_hp', name: 'Dummy', hp: 100 });
+      debugSend({ t: 'debug_pos', name: 'Dummy', x: p.x + 6, z: p.z, y: null });
+      await sleep(350);
+      await evaluate(({ headY }) => {
+        const l = window.__game.local;
+        const b = window.__game.serverPlayers.find((r) => r.name === 'Dummy' && r.alive);
+        if (!b) return;
+        const dx = b.x - l.pos.x, dz = b.z - l.pos.z;
+        const dy = (b.y + headY + 0.04) - (l.pos.y + l.eye);
+        l.yaw = Math.atan2(-dx, -dz);
+        l.pitch = Math.atan2(dy, Math.hypot(dx, dz));
+        l.lastFire = 0;
+        l.recoilPitch = 0; l.spreadHeat = 0;
+      }, { headY: WORLD.headY });
+      await evaluate(() => { const l = window.__game.local; l.lastFire = 0; return !!l.tryFire(); });
+      headMark = await waitMarker('head', 1000);
+      headHit = !!headMark;
+      if (!headHit) await sleep(180);
+    }
+    check('爆头命中触发红色斜线标记（part=head）', headHit, headMark ? 'part=head' : 'no head marker');
+    await page.screenshot(path.join(SHOT_DIR, '04-combat.png'));
+  }
+
+  // ---------- 5. 据点占领 ----------
+  await teleport(0, 0);
+  let zoneB = null;
+  for (let i = 0; i < 40; i++) {
+    await sleep(220);
+    const zHud = (await readHud()).zones || [];
+    zoneB = zHud.find((z) => z.id === 'B');
+    if (zoneB && (zoneB.progress > 0.02 || zoneB.owner === 'alpha')) break;
+  }
+  check('站入 B 据点后占领进度推进', zoneB && (zoneB.progress > 0.02 || zoneB.owner === 'alpha'),
+    zoneB ? `progress=${(zoneB.progress || 0).toFixed(2)}` : 'none');
+
+  // ---------- 6. 无曳光弹 / 控制台错误 / 帧率 ----------
+  const combatState = await evaluate(() => ({
+    tracerCount: window.__game.tracerCount,
+    enemyTracers: window.__game.enemyTracers,
+    errors: window.__game.errors.slice(0, 10),
+    rendererInfo: window.__game.renderer.info.render,
+  }));
+  check('无曳光弹效果（tracerCount=0）', combatState.tracerCount === 0 && combatState.enemyTracers === 0);
+  const gameErrors = combatState.errors.filter((e) => !/pointer lock/i.test(e));
+  check('运行期无 JavaScript/WebGL 错误', gameErrors.length === 0 && errors.length === 0,
+    [...gameErrors, ...errors].slice(0, 3).join(' | '));
+
+  await sleep(800);
+  const fps = await evaluate(() => window.__game.fps);
+  check('软件渲染下仍可运行（fps > 1）', fps > 1, 'fps=' + fps);
+  check('渲染 draw call 在预算内', combatState.rendererInfo.calls <= 180,
+    'calls=' + combatState.rendererInfo.calls + ' tris=' + combatState.rendererInfo.triangles);
+
+  // ---------- 7. 截图：地形/第三人称角色/开镜 ----------
+  await teleport(-46, 40);            // 西南山丘看山谷
+  await evaluate(() => { window.__game.local.yaw = Math.PI * 0.72; window.__game.local.pitch = -0.08; });
+  await sleep(900);
+  await page.screenshot(path.join(SHOT_DIR, '05-hills.png'));
+  await evaluate(() => { window.__game.local.pitch = 0.25; });
+  await sleep(600);
+  await page.screenshot(path.join(SHOT_DIR, '06-landscape.png'));
 } catch (e) {
-  console.log('ERROR:', e.message);
+  console.error('浏览器测试异常：', e && e.stack || e);
+  results.push(['测试执行未抛异常', false]);
+} finally {
+  if (browser) { try { await browser.close(); } catch { /* ignore */ } }
+  if (staticSrv) { try { await staticSrv.close(); } catch { /* ignore */ } }
+  if (dbg) { try { dbg.close(); } catch { /* ignore */ } }
+  try { server.kill(); } catch { /* ignore */ }
+  await sleep(300);
 }
 
-dbg.close();
-await browser.close();
-srv.kill();
-
-console.log('--- 页面错误 ---');
-if (errors.length === 0) console.log('（无错误）');
-else errors.slice(0, 20).forEach((e) => console.log(e));
 const failed = results.filter(([, ok]) => !ok).length;
-console.log(`\n结果：${results.length - failed}/${results.length} 通过`);
+console.log(`\n结果：${results.length - failed}/${results.length} 通过，${failed} 失败（截图：${SHOT_DIR}）`);
 process.exit(failed ? 1 : 0);

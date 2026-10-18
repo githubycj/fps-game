@@ -1,72 +1,66 @@
-// ===== 霓虹战场 · 客户端主入口 =====
+// ===== 郊区战场 · 客户端主入口 =====
+// 职责：渲染循环、输入、第一人称武器/开镜、远程角色插值、特效与音效调度、网络事件、HUD 接线。
+// 场景/角色/枪模/音效/特效/HUD 均由独立模块实现，这里只做集成。
 import * as THREE from 'three';
 import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
-import { WORLD, WEAPONS, WEAPON_ORDER, weaponOf } from '../shared/map.js';
+import { WORLD, ZONES, heightAt, raycastWorld, surfaceAt } from '../shared/world.js';
+import { WEAPON_ORDER, weaponOf, isScopeWeapon } from '../shared/weapons.js';
 import { Net, wsUrl } from './net.js';
 import { buildWorld } from './world.js';
-import { LocalPlayer } from './player.js';
+import { LocalPlayer, BASE_FOV } from './player.js';
+import { ScopeController } from './scope.js';
 import { Effects } from './effects.js';
-import { initAudio, sfx } from './audio.js';
+import { initAudio, sfx, setAudioListener, startAmbience, stopAmbience } from './audio.js';
 import { createCharacter } from './models/character.js';
 import { createWeaponModel } from './models/weapons.js';
+import { initHud, hud } from './hud.js';
 
-// ---------- DOM ----------
-const $ = (id) => document.getElementById(id);
-const menuEl = $('menu'), hudEl = $('hud');
-const nickEl = $('nick'), joinBtn = $('joinBtn'), connStatus = $('connStatus');
-const statusEl = $('status'), playersEl = $('players');
-const hpFill = $('hpFill'), hpNum = $('hpNum');
-const hitmarkerEl = $('hitmarker'), flashEl = $('flash');
-const pauseEl = $('pause'), pauseText = $('pauseText');
-const deathEl = $('death'), deathText = $('deathText'), deathSub = $('deathSub');
-const weaponEl = $('weapon');
-const scoreEl = $('score');
-const shieldWrapEl = $('shieldWrap');
-const shieldFillEl = $('shieldFill');
-const speedEl = $('speedBadge');
-const ammoMagEl = $('ammoMag');
-const ammoReserveEl = $('ammoReserve');
-const reloadWrapEl = $('reloadWrap');
-const reloadFillEl = $('reloadFill');
-const slotsEl = $('weaponSlots');
-const toastsEl = $('toasts');
+// ---------- 设置（localStorage / HUD 设置面板共享） ----------
+const SENS_BASE = 0.0022;
+const settings = {
+  sens: 1,            // 灵敏度倍率（0.2 ~ 3，HUD 滑块）
+  quality: 'auto',    // auto | high | medium | low
+};
+if (typeof window !== 'undefined') window.__settings = settings;
 
-// ---------- 武器 HUD ----------
-function setWeaponHud(w) {
-  if (weaponEl) weaponEl.textContent = weaponOf(w).name;
-}
-function updateAmmoHud() {
-  if (!local) return;
-  const a = local.ammoOf();
-  const w = local.weaponDef();
-  if (ammoMagEl) {
-    ammoMagEl.textContent = a.mag;
-    ammoMagEl.classList.toggle('low', a.mag <= Math.max(1, Math.floor(w.magSize * 0.25)));
-  }
-  if (ammoReserveEl) ammoReserveEl.textContent = a.reserve === Infinity ? '∞' : a.reserve;
-}
-function buildWeaponSlots() {
-  if (!slotsEl) return;
-  slotsEl.innerHTML = '';
-  WEAPON_ORDER.forEach((id, i) => {
-    const el = document.createElement('div');
-    el.className = 'slot';
-    el.dataset.weapon = id;
-    el.innerHTML = `<span class="k">${i + 1}</span><span class="n">${weaponOf(id).name}</span>`;
-    slotsEl.appendChild(el);
-  });
-}
-function updateWeaponSlots() {
-  if (!slotsEl || !local) return;
-  for (const el of slotsEl.children) {
-    const id = el.dataset.weapon;
-    el.classList.toggle('owned', !!local.owned[id]);
-    el.classList.toggle('active', id === local.weapon);
+// ---------- HUD 安全包装：缺方法时不至于整帧崩掉 ----------
+const HUD_METHODS = [
+  'showMenu', 'hideMenu', 'setMenuStatus', 'setMenuVisible',
+  'setHp', 'setShield', 'setStamina', 'setStance',
+  'setWeapon', 'setReload', 'setWeaponSlots',
+  'setCrosshair', 'setAiming', 'setScope',
+  'showHitmarker', 'flashDamage', 'showDamageFrom',
+  'setScores', 'setZones', 'setTimer', 'setUav', 'setKills', 'setDeaths', 'setPing', 'setPlayers',
+  'addKillFeed', 'addToast', 'setStreak',
+  'showDeath', 'hideDeath', 'showPause', 'hidePause',
+  'showMatchEnd', 'hideMatchEnd',
+  'setMinimapState', 'setVisible', 'setStatus',
+];
+const H = {};
+{
+  const src = hud || {};
+  for (const m of HUD_METHODS) {
+    H[m] = (...args) => {
+      try {
+        if (typeof src[m] === 'function') return src[m](...args);
+      } catch (e) {
+        if (!H._warned) { console.warn('[hud] ' + m + ':', e.message); H._warned = true; }
+      }
+      return undefined;
+    };
   }
 }
 
-// ---------- 渲染器 / 场景 ----------
-// 软件渲染（SwiftShader 等无 GPU 环境）下关闭抗锯齿：MSAA 的填充开销极高
+// ---------- 音效安全包装 ----------
+const SFX_NAMES = ['shoot', 'dryFire', 'reload', 'reloadStep', 'switchWeapon', 'hit', 'hitConfirm',
+  'headshotConfirm', 'kill', 'hurt', 'death', 'jump', 'land', 'footstep', 'slide',
+  'pickup', 'heal', 'uiClick', 'capture', 'zoneLost', 'uav', 'win', 'lose', 'whiz', 'respawn'];
+const S = {};
+for (const n of SFX_NAMES) {
+  S[n] = (...args) => { try { if (sfx && typeof sfx[n] === 'function') sfx[n](...args); } catch { /* 音效失败不影响游戏 */ } };
+}
+
+// ---------- 软件渲染检测 ----------
 function detectSoftwareGL() {
   try {
     const c = document.createElement('canvas');
@@ -77,233 +71,246 @@ function detectSoftwareGL() {
     return /swiftshader|software|llvmpipe|basic render/i.test(name);
   } catch { return false; }
 }
-
 const SOFT_GL = detectSoftwareGL();
+
+// ---------- 渲染器 / 场景 ----------
+const canvas = document.getElementById('game');
 const renderer = new THREE.WebGLRenderer({
-  canvas: $('game'),
+  canvas,
   antialias: !SOFT_GL,
   powerPreference: 'high-performance',
+  stencil: false,
 });
-renderer.setPixelRatio(SOFT_GL ? 0.6 : Math.min(window.devicePixelRatio, 1.25));
+renderer.setPixelRatio(SOFT_GL ? 0.75 : Math.min(window.devicePixelRatio || 1, 1.5));
 renderer.setSize(innerWidth, innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.2;
+renderer.toneMappingExposure = 1.05;
 
 const scene = new THREE.Scene();
-const world = buildWorld(scene, renderer, { soft: SOFT_GL });
-const effects = new Effects(scene);
+const world = buildWorld(scene, renderer, { soft: SOFT_GL, quality: settings.quality });
+const effects = new Effects(scene, renderer);
 
-const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 400);
+const camera = new THREE.PerspectiveCamera(BASE_FOV, innerWidth / innerHeight, 0.06, 520);
 camera.rotation.order = 'YXZ';
 scene.add(camera);
 
-// ---------- 第一人称武器模型（挂在相机上） ----------
-// 每把枪的腰射/瞄准基准位不同：长枪更靠后，狙击枪瞄准时居中对齐瞄具
-const GUN_BASE = {
-  pistol:  [0.30, -0.26, -0.50],
-  smg:     [0.28, -0.25, -0.48],
-  ak47:    [0.26, -0.24, -0.46],
-  shotgun: [0.27, -0.25, -0.44],
-  sniper:  [0.22, -0.22, -0.42],
-};
-const ADS_BASE = {
-  pistol:  [0.0, -0.155, -0.40],
-  smg:     [0.0, -0.150, -0.38],
-  ak47:    [0.0, -0.145, -0.36],
-  shotgun: [0.0, -0.150, -0.34],
-  sniper:  [0.0, -0.130, -0.30],
-};
-let aiming = false;
-let aimAmount = 0;
-const gunModels = {};
-for (const id of WEAPON_ORDER) {
-  const m = createWeaponModel(id, { firstPerson: true });
-  m.visible = false;
-  camera.add(m);
-  gunModels[id] = m;
-}
-let gun = gunModels.pistol;
-gun.visible = true;
-
-function setWeaponGun(w) {
-  const next = gunModels[w] || gunModels.pistol;
-  if (next !== gun) {
-    gun.visible = false;
-    next.visible = true;
-    gun = next;
-  }
-}
-
-
-// ---------- 名牌渲染 ----------
+// 名称标签（CSS2D）层
 const labelRenderer = new CSS2DRenderer();
 labelRenderer.setSize(innerWidth, innerHeight);
-labelRenderer.domElement.style.position = 'absolute';
-labelRenderer.domElement.style.top = '0';
-labelRenderer.domElement.style.left = '0';
-labelRenderer.domElement.style.pointerEvents = 'none';
+Object.assign(labelRenderer.domElement.style, {
+  position: 'absolute', top: '0', left: '0', pointerEvents: 'none', zIndex: '6',
+});
 document.body.appendChild(labelRenderer.domElement);
 
-// ---------- 网络 ----------
+// ---------- 第一人称武器 ----------
+const gunModels = {};
+const scope = new ScopeController(camera);
+for (const id of WEAPON_ORDER) {
+  const g = createWeaponModel(id, { firstPerson: true });
+  // 第一人称视图模型整体再缩一档，避免枪身占屏过大（模型模块给的是枪械真实比例）
+  g.scale.multiplyScalar(0.82);
+  g.visible = false;
+  camera.add(g);
+  gunModels[id] = g;
+  scope.register(id, g);
+}
+scope.setWeapon('pistol');
+// 把视图模型调到近裁剪面之外一点（模型模块自己缩放，这里只做避免穿帮的保险）
+for (const id of WEAPON_ORDER) gunModels[id].position.z = -0.2;
+
+// ---------- 状态 ----------
 const net = new Net();
 let myId = null;
+let myTeam = 'alpha';
 let maxPlayers = WORLD.maxPlayers;
 let started = false;
-let shooting = false;
-const crosshairEl = document.getElementById('crosshair');
-let recoil = 0;
-let pingSmoothed = 0;
 let local = null;
-const remotes = new Map();   // id -> { group, labelObj, hpFill, target }
-const itemMeshes = new Map(); // id -> 地面道具
-const playerRows = new Map(); // id -> DOM row
 let deathVisible = false;
+let shooting = false;
+let pingSmoothed = 0;
+let elapsed = 0;
+let fpsEma = 0;
+let qualityLevel = SOFT_GL ? 2 : 0;
+let lastQualityCheck = 0;
+let statusText = '';
+const remotes = new Map();       // id -> remote state
+const itemMeshes = new Map();    // id -> { group, type, bob }
+const remoteWeaponCache = new Map();
+const errors = [];
+window.addEventListener('error', (e) => errors.push(String(e.message || e.error)));
+window.addEventListener('unhandledrejection', (e) => errors.push('promise: ' + String(e.reason)));
+const originalError = console.error.bind(console);
+console.error = (...args) => { errors.push(args.join(' ')); originalError(...args); };
 
-const hex = (c) => '#' + c.toString(16).padStart(6, '0');
+let lastMinimapAt = 0;
+let lastStateMsg = null;
+let lastHud = { aiming: null, scope: null, stance: null, weapon: null, mag: -1, reserve: -1 };
+
+const hex = (c) => '#' + Number(c || 0x888888).toString(16).padStart(6, '0');
 const esc = (s) => String(s).replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
+const v3 = (p) => new THREE.Vector3(p.x, p.y, p.z);
 
-// ---------- HUD 辅助 ----------
-function setHp(hp) {
-  const pct = Math.max(0, Math.min(100, hp));
-  hpFill.style.width = pct + '%';
-  hpNum.textContent = Math.round(pct);
-}
-
-function showHitmarker(part = 'body', killed = false) {
-  hitmarkerEl.classList.remove('head', 'kill');
-  if (killed) hitmarkerEl.classList.add('kill');
-  else if (part === 'head') hitmarkerEl.classList.add('head');
-  hitmarkerEl.classList.remove('hidden');
-  hitmarkerEl.style.animation = 'none';
-  void hitmarkerEl.offsetWidth; // 重启动画
-  hitmarkerEl.style.animation = '';
-  setTimeout(() => {
-    hitmarkerEl.classList.add('hidden');
-    hitmarkerEl.classList.remove('head', 'kill');
-  }, killed ? 450 : 200);
-}
-
-let flashTimer = null;
-function flashDamage(head = false) {
-  flashEl.classList.remove('hidden');
-  flashEl.style.opacity = head ? 1 : 0.85;
-  clearTimeout(flashTimer);
-  flashTimer = setTimeout(() => {
-    flashEl.style.opacity = 0;
-    setTimeout(() => flashEl.classList.add('hidden'), 550);
-  }, 80);
-}
-
-function addToast(text) {
-  const el = document.createElement('div');
-  el.className = 'toast';
-  el.textContent = text;
-  toastsEl.appendChild(el);
-  setTimeout(() => el.remove(), 2800);
+// 名称标签用的简易血量条
+function labelHTML(name, color, bot, team) {
+  return `<span class="dot" style="background:${hex(color)}"></span><span class="nm">${esc(name)}</span>` +
+    (bot ? '<span class="ai-tag">AI</span>' : '') +
+    `<span class="hpbar"><i style="width:100%"></i></span>`;
 }
 
 // ---------- 远程玩家 ----------
-// ---------- 远程玩家（程序化角色模型 + 骨骼式动画） ----------
 function setRemoteWeapon(r, id) {
   if (r.weaponId === id) return;
   r.weaponId = id;
-  r.char.attachWeapon(createWeaponModel(id, { simple: true }));
+  let model = remoteWeaponCache.get(id);
+  if (!model) {
+    model = createWeaponModel(id, { simple: true });
+    remoteWeaponCache.set(id, model);
+  }
+  r.char.attachWeapon(model);
 }
 
 function createRemote(p) {
-  const char = createCharacter({ color: p.color });
+  const char = createCharacter({ color: p.color, team: p.team || 'bravo' });
   const group = char.root;
-  group.position.set(p.x, p.y, p.z);
-  group.rotation.y = p.yaw;
+  group.position.set(p.x, p.y ?? heightAt(p.x, p.z), p.z);
+  group.rotation.y = p.yaw || 0;
 
   const label = document.createElement('div');
   label.className = 'name-tag';
-  label.innerHTML = `<span class="dot" style="color:${hex(p.color)};background:${hex(p.color)}"></span>` +
-    `<span class="nm">${esc(p.name)}</span>` + (p.bot ? '<span class="ai-tag">AI</span>' : '') +
-    (p.bot ? `<span class="team-tag ${p.team === 'ally' ? 'ally' : 'enemy'}"></span>` : '');
+  label.innerHTML = labelHTML(p.name, p.color, p.bot, p.team);
   const labelObj = new CSS2DObject(label);
-  labelObj.position.set(0, 2.05, 0);
+  labelObj.position.set(0, 2.02, 0);
   group.add(labelObj);
 
   scene.add(group);
   const state = {
-    char, group, labelObj,
+    id: p.id,
+    char, group, label, labelObj,
     name: p.name,
+    team: p.team || 'bravo',
+    bot: !!p.bot,
     weaponId: null,
     target: {
-      x: p.x, y: p.y, z: p.z, yaw: p.yaw, hp: p.hp, alive: p.alive,
+      x: p.x, y: p.y ?? heightAt(p.x, p.z), z: p.z,
+      yaw: p.yaw || 0, pitch: p.pitch || 0,
+      hp: p.hp, alive: p.alive !== false,
       grounded: p.grounded !== false, aiming: !!p.aiming,
+      stance: p.stance || 'stand', sprint: !!p.sprint,
+      firingUntil: 0, reloadUntil: 0, hitAt: 0,
     },
     speed: 0,
+    glint: null,
+    lastHp: p.hp,
+    lastLabelHp: p.hp,
   };
   setRemoteWeapon(state, p.weapon || 'pistol');
   remotes.set(p.id, state);
   return state;
 }
 
-function createItemMesh(it) {
-  const group = new THREE.Group();
-  if (it.type === 'medkit') {
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.22, 0.5), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6 }));
-    body.position.y = 0.42;
-    group.add(body);
-    const crossMat = new THREE.MeshBasicMaterial({ color: 0xd84050 });
-    const c1 = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.1, 0.06), crossMat);
-    c1.position.set(0, 0.42, 0.28);
-    group.add(c1);
-    const c2 = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.28, 0.06), crossMat);
-    c2.position.set(0, 0.42, 0.28);
-    group.add(c2);
-  } else if (it.type === 'shield') {
-    const orb = new THREE.Mesh(new THREE.SphereGeometry(0.28, 12, 10), new THREE.MeshStandardMaterial({ color: 0x7fb0ff, roughness: 0.25, metalness: 0.4, emissive: 0x2a4a80, emissiveIntensity: 0.6 }));
-    orb.position.y = 0.45;
-    group.add(orb);
-    const rim = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.03, 8, 20), new THREE.MeshBasicMaterial({ color: 0xaad0ff }));
-    rim.position.y = 0.45;
-    rim.rotation.x = Math.PI / 2;
-    group.add(rim);
-  } else if (it.type === 'speed') {
-    const core = new THREE.Mesh(new THREE.ConeGeometry(0.18, 0.36, 4), new THREE.MeshStandardMaterial({ color: 0x9be08a, roughness: 0.4, metalness: 0.3, emissive: 0x2f6a24, emissiveIntensity: 0.6 }));
-    core.position.y = 0.46;
-    core.rotation.x = -Math.PI / 2;
-    group.add(core);
-    for (const dz of [0.16, -0.2]) {
-      const tail = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.05, 0.12), new THREE.MeshBasicMaterial({ color: 0xbaffa8 }));
-      tail.position.set(0, 0.46, dz);
-      group.add(tail);
-    }
-  } else if (WEAPONS[it.type]) {
-    // 武器道具：直接摆一把缩小版的枪，拾取前就能看出是什么
-    const wm = createWeaponModel(it.type);
-    wm.scale.setScalar(0.5);
-    wm.position.set(0, 0.5, 0);
-    wm.rotation.set(0.08, 0, 0.35);
-    group.add(wm);
-  }
-  const ringColor = WEAPONS[it.type]
-    ? WEAPONS[it.type].tracer
-    : (it.type === 'medkit' ? 0x7fe0c0 : (it.type === 'shield' ? 0x7fb0ff : 0x9be08a));
-  const ring = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.7, 0.7, 0.05, 24, 1, true),
-    new THREE.MeshBasicMaterial({ color: ringColor, transparent: true, opacity: 0.7 })
-  );
-  ring.position.y = 0.03;
-  group.add(ring);
-  group.position.set(it.x, 0, it.z);
-  scene.add(group);
-
-  const state = { group, type: it.type, bob: Math.random() * Math.PI * 2 };
-  itemMeshes.set(it.id, state);
-  return state;
+function removeRemote(id) {
+  const r = remotes.get(id);
+  if (!r) return;
+  scene.remove(r.group);
+  try { r.char.dispose && r.char.dispose(); } catch { /* ignore */ }
+  remotes.delete(id);
 }
+
+const _glintTexture = (() => {
+  try {
+    const c = document.createElement('canvas');
+    c.width = c.height = 64;
+    const ctx = c.getContext('2d');
+    const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
+    g.addColorStop(0, 'rgba(255,255,255,1)');
+    g.addColorStop(0.25, 'rgba(255,240,200,0.9)');
+    g.addColorStop(0.6, 'rgba(255,200,120,0.25)');
+    g.addColorStop(1, 'rgba(255,180,80,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 64, 64);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    return tex;
+  } catch { return null; }
+})();
+
+function ensureGlint(r) {
+  if (r.glint || !_glintTexture) return;
+  const mat = new THREE.SpriteMaterial({ map: _glintTexture, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false });
+  r.glint = new THREE.Sprite(mat);
+  r.glint.scale.setScalar(0.5);
+  r.glint.position.set(0, 1.72, -0.18);
+  r.group.add(r.glint);
+}
+
+function updateRemotes(dt) {
+  for (const r of remotes.values()) {
+    const t = r.target;
+    const k = 1 - Math.exp(-12 * dt);
+    const px = r.group.position.x, pz = r.group.position.z;
+    r.group.position.x += (t.x - r.group.position.x) * k;
+    r.group.position.y += (t.y - r.group.position.y) * k;
+    r.group.position.z += (t.z - r.group.position.z) * k;
+    const da = Math.atan2(Math.sin(t.yaw - r.group.rotation.y), Math.cos(t.yaw - r.group.rotation.y));
+    r.group.rotation.y += da * k;
+
+    const inst = Math.hypot(r.group.position.x - px, r.group.position.z - pz) / Math.max(dt, 1e-4);
+    r.speed = r.speed * 0.75 + inst * 0.25;
+
+    const nowMs = performance.now();
+    const firing = nowMs < t.firingUntil;
+    const w = weaponOf(r.weaponId);
+    r.char.update({
+      speed: r.speed,
+      grounded: t.grounded,
+      alive: t.alive,
+      aiming: t.aiming,
+      pitch: t.pitch,
+      stance: t.stance,
+      sprint: t.sprint,
+      firing,
+      reloading: nowMs < t.reloadUntil,
+      hitAt: t.hitAt || 0,
+    }, dt);
+
+    // 名牌：近距离显示；血量条同步
+    if (r.labelObj) {
+      const dx = r.group.position.x - camera.position.x;
+      const dz = r.group.position.z - camera.position.z;
+      const d2 = dx * dx + dz * dz;
+      r.labelObj.visible = t.alive && d2 < 30 * 30;
+      if (t.hp !== r.lastLabelHp) {
+        const bar = r.label.querySelector('.hpbar i');
+        if (bar) bar.style.width = Math.max(0, Math.min(100, t.hp)) + '%';
+        r.lastLabelHp = t.hp;
+      }
+    }
+
+    // 狙击镜反光：开镜的狙击手会有镜片闪光（真实感 + 反制信息）
+    const scoped = t.alive && t.aiming && w.sightType === 'scope';
+    if (scoped) { ensureGlint(r); if (r.glint) r.glint.visible = true; }
+    else if (r.glint) r.glint.visible = false;
+  }
+}
+
+// ---------- 地面道具 ----------
 function syncItems(list) {
   const seen = new Set();
   for (const it of list || []) {
     seen.add(it.id);
-    if (!itemMeshes.has(it.id)) createItemMesh(it);
+    if (itemMeshes.has(it.id)) continue;
+    let group;
+    try {
+      group = world.createItemMesh ? world.createItemMesh(it.type) : null;
+    } catch { group = null; }
+    if (!group) continue;
+    const gy = heightAt(it.x, it.z);
+    group.position.set(it.x, gy, it.z);
+    scene.add(group);
+    itemMeshes.set(it.id, { group, type: it.type, bob: Math.random() * Math.PI * 2, baseY: gy });
   }
-  for (const id of itemMeshes.keys()) {
+  for (const id of [...itemMeshes.keys()]) {
     if (!seen.has(id)) {
       const s = itemMeshes.get(id);
       scene.remove(s.group);
@@ -312,148 +319,198 @@ function syncItems(list) {
   }
 }
 
-function removeRemote(id) {
-  const r = remotes.get(id);
-  if (r) {
-    scene.remove(r.group);
-    remotes.delete(id);
-  }
-}
-
-function updateRemotes(dt) {
-  for (const r of remotes.values()) {
-    const t = r.target;
-    const k = 1 - Math.exp(-10 * dt);
-    const px = r.group.position.x, pz = r.group.position.z;
-    r.group.position.x += (t.x - r.group.position.x) * k;
-    r.group.position.y += (t.y - r.group.position.y) * k;
-    r.group.position.z += (t.z - r.group.position.z) * k;
-    const da = Math.atan2(Math.sin(t.yaw - r.group.rotation.y), Math.cos(t.yaw - r.group.rotation.y));
-    r.group.rotation.y += da * k;
-
-    // 用位移估计水平速度，驱动步态动画
-    const inst = Math.hypot(r.group.position.x - px, r.group.position.z - pz) / Math.max(dt, 1e-4);
-    r.speed = r.speed * 0.72 + inst * 0.28;
-    r.char.update({ speed: r.speed, grounded: t.grounded, alive: t.alive, aiming: t.aiming }, dt);
-
-    // 名牌仅近距离显示（且存活）
-    if (r.labelObj) {
-      const dx = r.group.position.x - local.pos.x;
-      const dz = r.group.position.z - local.pos.z;
-      r.labelObj.visible = t.alive && (dx * dx + dz * dz < 15 * 15);
-    }
-  }
-}
-
-// ---------- 在线玩家列表 ----------
-function makePlayerRow(p) {
-  const row = document.createElement('div');
-  row.className = 'player-row' + (p.id === myId ? ' me' : '');
-  row.innerHTML = `<span class="pdot" style="color:${hex(p.color)};background:${hex(p.color)}"></span>` +
-    `<span class="pname">${esc(p.name)}${p.id === myId ? '（我）' : ''}</span>` +
-    (p.bot ? '<span class="ai-tag">AI</span>' : '') +
-    (p.bot ? `<span class="team-tag ${p.team === 'ally' ? 'ally' : 'enemy'}"></span>` : '') +
-    `<span class="pbar"><i></i></span>`;
-  playersEl.appendChild(row);
-  return row;
-}
-
-function syncPlayerList(players) {
-  const seen = new Set();
-  for (const p of players) {
-    seen.add(p.id);
-    let row = playerRows.get(p.id);
-    if (!row) {
-      row = makePlayerRow(p);
-      playerRows.set(p.id, row);
-    }
-    const fill = row.querySelector('.pbar i');
-    fill.style.width = Math.max(0, (p.hp / WORLD.maxHp) * 100) + '%';
-    fill.classList.toggle('dead', !p.alive);
-  }
-  for (const [id, row] of playerRows) {
-    if (!seen.has(id)) {
-      row.remove();
-      playerRows.delete(id);
-    }
-  }
-}
-
-// ---------- 开火视觉 ----------
-const _dir = new THREE.Vector3();
-const _origin = new THREE.Vector3();
-const raycaster = new THREE.Raycaster();
-raycaster.far = WORLD.shootRange;
-
+// ---------- 开火视觉：枪口焰 / 弹壳 / 弹着（无曳光弹） ----------
 const _muzzle = new THREE.Vector3();
-const _beamDir = new THREE.Vector3();
+const _dir = new THREE.Vector3();
+const _right = new THREE.Vector3();
+const _origin = new THREE.Vector3();
 
-function fireVisual() {
-  const w = local.weaponDef();
-  if (window.__game) window.__game.shotsFired = (window.__game.shotsFired || 0) + 1;
-  sfx.shoot();
-  recoil = Math.min(0.24, recoil + w.recoil.kick);
-
-  // 枪口位置取武器模型自带坐标（随模型缩放），用于闪光与曳光起点
-  const ml = gun.userData.muzzle;
-  _muzzle.set(0, 0, -0.9);
-  if (ml) _muzzle.copy(ml);
+function fireVisual(result) {
+  const gun = scope.active || gunModels[local.weapon];
+  if (!gun) return;
+  const w = weaponOf(local.weapon);
+  if (gun.userData.muzzle) _muzzle.copy(gun.userData.muzzle); else _muzzle.set(0, 0.03, -0.8);
   gun.localToWorld(_muzzle);
-  effects.muzzleFlash(_muzzle, w.tracer);
-
   camera.getWorldDirection(_dir);
-  camera.getWorldPosition(_origin);
-  _origin.y -= 0.12; // 射线略低于视线中心，与服务器 eyeHeight 对齐
-  raycaster.set(_origin, _dir);
-  raycaster.far = w.range;
-  const hits = raycaster.intersectObjects(world.raycastTargets, false);
-  const end = hits.length
-    ? hits[0].point.clone()
-    : _origin.clone().addScaledVector(_dir, w.range);
-  if (hits.length) effects.impact(end, w.tracer);
+  _right.set(1, 0, 0).applyQuaternion(camera.quaternion);
 
-  // 霰弹枪一次画多条曳光，视觉上体现弹丸扩散
-  const beams = w.pellets > 1 ? Math.min(w.pellets, 5) : 1;
-  for (let i = 0; i < beams; i++) {
-    if (beams === 1) {
-      effects.tracer(_muzzle, end, w.tracer);
-      break;
+  // 音效：第一人称近距离（含空间感由 audio 模块处理）
+  S.shoot(local.weapon, { distance: 0, pan: 0 });
+  try { effects.muzzleFlash(_muzzle, _dir, local.weapon); } catch { /* ignore */ }
+  try { effects.shellEject(_muzzle, _right, local.weapon); } catch { /* ignore */ }
+
+  // 客户端的视觉弹着预测（服务器权威命中另发 hit 消息）
+  camera.getWorldPosition(_origin);
+  _origin.y -= 0.06;
+  const spread = result ? result.spread : local.currentSpreadRad();
+  const pellets = Math.max(1, Math.min(w.pellets || 1, 6));
+  for (let i = 0; i < pellets; i++) {
+    const d = _dir.clone();
+    if (spread > 0) {
+      const a = Math.random() * Math.PI * 2;
+      const rad = spread * (pellets > 1 ? 0.8 : 1) * Math.sqrt(Math.random());
+      d.x += Math.cos(a) * rad;
+      d.y += Math.sin(a) * rad;
+      d.z += (Math.random() - 0.5) * rad * 0.25;
+      d.normalize();
     }
-    _beamDir.copy(_dir);
-    const a = (i / beams) * Math.PI * 2 + Math.random();
-    const r = w.pelletSpread * 0.85 * Math.sqrt(Math.random());
-    _beamDir.x += Math.cos(a) * r;
-    _beamDir.y += Math.sin(a) * r;
-    _beamDir.z += (Math.random() - 0.5) * r * 0.5;
-    _beamDir.normalize();
-    const e = hits.length ? hits[0].point.clone() : _origin.clone().addScaledVector(_beamDir, w.range);
-    effects.tracer(_muzzle, e, w.tracer);
+    const hit = raycastWorld(_origin.x, _origin.y, _origin.z, d.x, d.y, d.z, w.range);
+    if (hit) {
+      try { effects.impact(v3(hit.point), v3(hit.normal), hit.surface, local.weapon); } catch { /* ignore */ }
+    }
   }
 }
 
-// ---------- 指针锁定与输入 ----------
+// ---------- 玩家列表 / HUD 同步 ----------
+function playerListForHud(players) {
+  return (players || []).map((p) => ({
+    id: p.id, name: p.name, color: p.color, team: p.team,
+    hp: p.hp, alive: p.alive, bot: !!p.bot, kills: p.kills, deaths: p.deaths,
+    me: p.id === myId,
+  }));
+}
+
+function updateLocalHud(me) {
+  if (!me || !local) return;
+  if (typeof me.hp === 'number') H.setHp(Math.max(0, Math.round(me.hp)), WORLD.maxHp);
+  if (typeof me.shield === 'number') H.setShield(me.shield, 50);
+  if (typeof me.kills === 'number') H.setKills(me.kills);
+  if (typeof me.deaths === 'number') H.setDeaths(me.deaths);
+  H.setStance(local.stance);
+  H.setStamina(local.stamina, WORLD.staminaMax);
+  const w = weaponOf(local.weapon);
+  const a = local.ammoOf();
+  if (lastHud.weapon !== local.weapon || lastHud.mag !== a.mag || lastHud.reserve !== a.reserve) {
+    H.setWeapon(local.weapon, w.name, a.mag, a.reserve === Infinity ? -1 : a.reserve);
+    lastHud.weapon = local.weapon;
+    lastHud.mag = a.mag;
+    lastHud.reserve = a.reserve;
+  }
+  H.setWeaponSlots(local.owned, local.weapon, WEAPON_ORDER);
+}
+
+function zonesForHud(list) {
+  return (list || []).map((z) => {
+    let progress = z.progress;
+    if (progress === undefined || progress === null) progress = Math.max(z.progressAlpha || 0, z.progressBravo || 0);
+    // 兼容 0~100 与 0~1 两种进度表示
+    if (progress > 1) progress = progress / 100;
+    return {
+      id: z.id,
+      name: z.name || z.id,
+      x: z.x, z: z.z, r: z.r,
+      owner: z.owner || null,
+      progress: Math.max(0, Math.min(1, progress || 0)),
+      progressAlpha: z.progressAlpha !== undefined ? (z.progressAlpha > 1 ? z.progressAlpha / 100 : z.progressAlpha) : undefined,
+      progressBravo: z.progressBravo !== undefined ? (z.progressBravo > 1 ? z.progressBravo / 100 : z.progressBravo) : undefined,
+      contested: !!z.contested,
+      capTeam: z.capTeam || null,
+    };
+  });
+}
+
+function minimapFromState(players, zones, uav) {
+  if (!local) return;
+  const nowMs = Date.now();
+  const myUav = uav && uav[myTeam] && uav[myTeam] > nowMs;
+  const allies = [];
+  const enemies = [];
+  for (const p of players || []) {
+    if (p.id === myId || !p.alive) continue;
+    if (p.team === myTeam) allies.push({ x: p.x, z: p.z, color: p.color, name: p.name });
+    else enemies.push({ x: p.x, z: p.z, color: p.color, name: p.name });
+  }
+  H.setMinimapState({
+    x: local.pos.x, z: local.pos.z, yaw: local.yaw,
+    allies, enemies, zones,
+    uav: !!myUav,
+    myTeam,
+  });
+}
+
+// ---------- 菜单 / 连接 ----------
+const menuEl = document.getElementById('menu');
+const nickEl = document.getElementById('nick');
+const joinBtn = document.getElementById('joinBtn');
+const connStatus = document.getElementById('connStatus');
+
+function setConnStatus(text, kind = '') {
+  if (connStatus) {
+    connStatus.textContent = text;
+    connStatus.className = 'status' + (kind ? ' ' + kind : '');
+  }
+  H.setMenuStatus(text, kind);
+}
+
+function showPause(text) { H.showPause(text); }
+function hidePause() { H.hidePause(); }
 function requestLock() {
-  renderer.domElement.requestPointerLock();
+  if (document.pointerLockElement !== canvas) canvas.requestPointerLock && canvas.requestPointerLock();
 }
 
-function showPause(text) {
-  pauseText.textContent = text;
-  pauseEl.classList.remove('hidden');
+// 画质 / 灵敏度由 HUD 设置面板统一管理；这里只同步到渲染与玩家
+function syncSettingsFromHud() {
+  try {
+    if (hud && typeof hud.getSettings === 'function') {
+      const hs = hud.getSettings() || {};
+      if (typeof hs.sens === 'number' && hs.sens > 0) settings.sens = hs.sens;
+      if (hs.quality) settings.quality = hs.quality;
+    }
+  } catch { /* ignore */ }
+  if (typeof window !== 'undefined') window.__settings = settings;
+  if (world.setQuality) world.setQuality(settings.quality);
+  if (effects.setQuality) {
+    effects.setQuality(settings.quality === 'auto' ? (SOFT_GL ? 'low' : 'high') : settings.quality);
+  }
+  if (local) local.sens = SENS_BASE * settings.sens;
 }
-function hidePause() { pauseEl.classList.add('hidden'); }
+window.addEventListener('sf:settings', (e) => {
+  const d = (e && e.detail) || {};
+  if (typeof d.sens === 'number' && d.sens > 0) {
+    settings.sens = d.sens;
+    if (local) local.sens = SENS_BASE * d.sens;
+  }
+  if (d.quality && d.quality !== settings.quality) {
+    settings.quality = d.quality;
+    if (world.setQuality) world.setQuality(d.quality);
+    if (effects.setQuality) effects.setQuality(d.quality === 'auto' ? (SOFT_GL ? 'low' : 'high') : d.quality);
+  }
+});
 
+joinBtn && joinBtn.addEventListener('click', async () => {
+  initAudio();
+  const name = (nickEl && nickEl.value.trim()) || '玩家';
+  setConnStatus('连接中…');
+  if (joinBtn) joinBtn.disabled = true;
+  try {
+    await net.connect(wsUrl());
+    net.send({ t: 'join', name });
+    setConnStatus('已连接，等待服务器确认…');
+  } catch (e) {
+    setConnStatus('连接失败：' + e.message, 'err');
+    if (joinBtn) joinBtn.disabled = false;
+  }
+});
+nickEl && nickEl.addEventListener('keydown', (e) => { if (e.key === 'Enter') joinBtn && joinBtn.click(); });
+nickEl && nickEl.focus();
+
+setInterval(() => net.send({ t: 'ping', time: performance.now() }), 1000);
+setInterval(() => { if (started && local) local.sendInput(); }, 33);
+
+// ---------- 输入 ----------
 document.addEventListener('pointerlockchange', () => {
-  const locked = document.pointerLockElement === renderer.domElement;
+  const locked = document.pointerLockElement === canvas;
   if (local) local.locked = locked;
-  if (locked) {
-    hidePause();
-  } else if (started && local && local.alive && !deathVisible) {
-    showPause('已暂停 · 点击继续');
+  if (locked) hidePause();
+  else if (started && local && local.alive && !deathVisible) {
+    shooting = false;
+    if (local) local.aiming = false;
+    showPause('已暂停 · 点击画面继续');
   }
 });
 
 document.addEventListener('mousemove', (e) => {
-  if (local && local.locked) local.onMouseMove(e.movementX, e.movementY);
+  if (local && local.locked) local.onMouseMove(e.movementX || 0, e.movementY || 0);
 });
 
 document.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -461,39 +518,38 @@ document.addEventListener('mousedown', (e) => {
   if (!started || !local) return;
   initAudio();
   if (e.button === 0 && local.locked && local.alive) shooting = true;
-  if (e.button === 2 && local.locked && local.alive) { aiming = true; local.aiming = true; }
+  if (e.button === 2 && local.locked && local.alive) local.aiming = true;
 });
 document.addEventListener('mouseup', (e) => {
-  if (e.button === 0) {
-    shooting = false;
-    if (local) local.onTriggerUp();   // 半自动武器需松开扳机才能再次击发
-  }
-  if (e.button === 2) { aiming = false; if (local) local.aiming = false; }
+  if (e.button === 0) { shooting = false; if (local) local.onTriggerUp(); }
+  if (e.button === 2 && local) local.aiming = false;
 });
 
-// 滚轮切枪
 window.addEventListener('wheel', (e) => {
   if (!started || !local || !local.locked || !local.alive) return;
-  local.cycleWeapon(e.deltaY > 0 ? 1 : -1);
+  if (local.cycleWeapon(e.deltaY > 0 ? 1 : -1)) onWeaponChanged();
 }, { passive: true });
 
 document.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     e.preventDefault();
-    if (local && local.locked && local.alive && local.grounded) sfx.jump();
+    if (local && local.locked && local.alive && local.grounded) S.jump();
     if (local) local.jumpHeld = true;
   }
-  if (local && started && local.alive && !e.repeat) {
-    // 数字键 1~5 直接切枪
-    const m = /^(?:Digit|Numpad)([1-5])$/.exec(e.code);
-    if (m) {
-      const id = WEAPON_ORDER[Number(m[1]) - 1];
-      if (id && local.requestSwitch(id)) sfx.switchWeapon();
+  if (local && started && !e.repeat) {
+    if (local.locked && local.alive) {
+      const m = /^(?:Digit|Numpad)([1-5])$/.exec(e.code);
+      if (m) {
+        const id = WEAPON_ORDER[Number(m[1]) - 1];
+        if (id && local.requestSwitch(id)) { S.switchWeapon(); onWeaponChanged(); }
+      }
+      if (e.code === 'KeyR') {
+        if (local.requestReload()) { S.reload(local.weapon); H.setReload(0.001); }
+      }
+      if (e.code === 'KeyQ') {
+        if (local.cycleWeapon(-1)) { S.switchWeapon(); onWeaponChanged(); }
+      }
     }
-    if (e.code === 'KeyR') {
-      if (local.requestReload()) sfx.reload();
-    }
-    if (e.code === 'KeyQ' && local.cycleWeapon(-1)) sfx.switchWeapon();
   }
   if (local) local.keys.add(e.code);
 });
@@ -502,423 +558,455 @@ document.addEventListener('keyup', (e) => {
   if (local) local.keys.delete(e.code);
 });
 window.addEventListener('blur', () => {
-  if (local) { local.keys.clear(); local.jumpHeld = false; }
+  if (local) { local.keys.clear(); local.jumpHeld = false; local.aiming = false; }
   shooting = false;
 });
 
-// 暂停 / 死亡点击
-pauseEl.addEventListener('click', () => {
+// 暂停点击恢复
+const pauseEl = document.getElementById('pause');
+pauseEl && pauseEl.addEventListener('click', () => {
   if (!local || !local.alive || deathVisible) return;
   shooting = false;
   requestLock();
 });
-// ---------- 网络事件 ----------
-function cancelAim() { aiming = false; if (local) local.aiming = false; }
 
-function showDeath(killerName) {
-  deathText.textContent = `你被 ${killerName || '？？？'} 击倒`;
-  deathSub.textContent = '重生中…';
-  deathEl.classList.remove('hidden');
-  deathVisible = true;
-  cancelAim();
-  sfx.death();
+function onWeaponChanged() {
+  if (!local) return;
+  scope.setWeapon(local.weapon);
+  const w = weaponOf(local.weapon);
+  H.setWeapon(local.weapon, w.name, local.ammoOf().mag, local.ammoOf().reserve === Infinity ? -1 : local.ammoOf().reserve);
+  H.setWeaponSlots(local.owned, local.weapon, WEAPON_ORDER);
+  lastHud.weapon = local.weapon;
 }
 
+// ---------- 网络事件 ----------
 net.on('welcome', (m) => {
   myId = m.id;
+  myTeam = m.team || 'alpha';
   maxPlayers = m.maxPlayers || WORLD.maxPlayers;
   local = new LocalPlayer(camera, net);
-  local.reset(m.spawn);
+  local.sens = SENS_BASE * settings.sens;
+  local.team = myTeam;
+  local.onFootstep = (surface, speed, sprint) => S.footstep(surface, sprint ? 'sprint' : speed > 4 ? 'run' : 'walk');
+  local.reset(m.spawn || { x: 0, z: 52 }, myTeam);
   started = true;
-  menuEl.classList.add('hidden');
-  hudEl.classList.remove('hidden');
-  statusEl.textContent = `已连接 · 玩家 ${m.players.length}/${m.maxPlayers}`;
-  syncPlayerList(m.players);
-  for (const p of m.players) if (p.id !== myId) createRemote(p);
-  // 初始化武器 HUD（服务器决定开局持有）
-  const me0 = m.players.find((p) => p.id === myId);
-  if (me0) local.syncWeaponFromServer(me0);
-  buildWeaponSlots();
-  updateWeaponSlots();
-  setWeaponHud(local.weapon);
-  setWeaponGun(local.weapon);
-  updateAmmoHud();
-  if (!deathVisible) showPause('点击屏幕进入战斗');
+  menuEl && menuEl.classList.add('hidden');
+  H.hideMenu();
+  H.setVisible(true);
+  deathVisible = false;
+  H.hideDeath();
+
+  const players = m.players || [];
+  syncPlayerList(players);
+  for (const p of players) if (p.id !== myId) createRemote(p);
+  const me = players.find((p) => p.id === myId);
+  if (me) updateLocalHud(me);
+  H.setWeaponSlots(local.owned, local.weapon, WEAPON_ORDER);
+  H.setScores({ alpha: 0, bravo: 0 });
+  H.setZones(zonesForHud(m.zones || []));
+  H.setTimer(m.match && m.match.timeLeft);
+  syncItems(m.items || []);
+  if (!deathVisible) showPause('点击画面进入战斗');
+  startAmbience && startAmbience();
 });
 
 net.on('player_joined', (m) => {
-  if (!started) return;
+  if (!started || !m.player) return;
+  if (m.player.id === myId) return;
   createRemote(m.player);
-  addToast(`${m.player.name} 加入战场`);
-  sfx.join();
+  H.addToast(`${m.player.name} 加入战场`);
+  syncPlayerList([...(remotesListForHud()), m.player]);
 });
 
 net.on('player_left', (m) => {
-  if (!started) return;
   removeRemote(m.id);
-  const row = playerRows.get(m.id);
-  if (row) { row.remove(); playerRows.delete(m.id); }
-  addToast(`有玩家离开了战场`);
-  sfx.leave();
+  H.addToast('有玩家离开了战场');
 });
+
+function remotesListForHud() {
+  return [...remotes.values()].map((r) => ({
+    id: r.id, name: r.name, team: r.team, hp: r.target.hp, alive: r.target.alive, bot: r.bot,
+  }));
+}
+
+function syncPlayerList(players) {
+  H.setPlayers(playerListForHud(players), myId);
+}
 
 net.on('state', (m) => {
   if (!started || !local) return;
-  const me = m.players.find((p) => p.id === myId);
+  lastStateMsg = m;
+  const me = (m.players || []).find((p) => p.id === myId);
   if (me) {
     const wasAlive = local.alive;
-    local.serverPos = new THREE.Vector3(me.x, me.y, me.z);
-    local.alive = me.alive;
-    local.hp = me.hp;
-    local.syncWeaponFromServer(me);      // 弹药/持有/当前武器以服务器为准
-    setHp(me.hp);
-    setWeaponHud(local.weapon);
-    setWeaponGun(local.weapon);
-    updateAmmoHud();
-    updateWeaponSlots();
-    if (scoreEl) scoreEl.textContent = '击杀 ' + (me.kills || 0) + ' · 死亡 ' + (me.deaths || 0);
-    if (shieldWrapEl) {
-      shieldWrapEl.classList.toggle('hidden', !(me.shield > 0));
-      if (shieldFillEl) shieldFillEl.style.width = Math.max(0, Math.min(100, (me.shield / WORLD.shieldMax) * 100)) + '%';
-    }
-    if (speedEl) speedEl.classList.toggle('hidden', !me.speed);
-    if (me.alive && !wasAlive && deathVisible) {
-      // 重生后自动回到战场（无需点击，指针锁保持）
-      deathEl.classList.add('hidden');
+    const prevWeapon = local.weapon;
+    local.setServerState(me);
+    if (local.weapon !== prevWeapon) onWeaponChanged();
+    updateLocalHud(me);
+    if (me.alive && !wasAlive) {
       deathVisible = false;
-      sfx.respawn();
+      H.hideDeath();
+      S.respawn();
     }
   }
+  // 远程玩家同步
   const seen = new Set();
-  for (const p of m.players) {
+  for (const p of m.players || []) {
     if (p.id === myId) continue;
     seen.add(p.id);
     let r = remotes.get(p.id);
     if (!r) r = createRemote(p);
     const t = r.target;
-    t.x = p.x; t.y = p.y; t.z = p.z;
-    t.yaw = p.yaw;
+    t.x = p.x; t.y = p.y ?? heightAt(p.x, p.z); t.z = p.z;
+    t.yaw = p.yaw || 0;
+    t.pitch = p.pitch || 0;
     t.hp = p.hp;
-    t.alive = p.alive;
-    t.grounded = p.grounded !== false;   // 用于落地/跳跃动画
+    t.alive = p.alive !== false;
+    t.grounded = p.grounded !== false;
     t.aiming = !!p.aiming;
+    t.stance = p.stance || 'stand';
+    t.sprint = !!p.sprint;
+    if (p.reloading || (p.reloadUntil && p.reloadUntil > Date.now())) t.reloadUntil = performance.now() + 400;
     const wid = p.weapon || 'pistol';
     if (r.weaponId !== wid) setRemoteWeapon(r, wid);
   }
-  for (const id of remotes.keys()) {
-    if (!seen.has(id)) removeRemote(id);
-  }
-  syncPlayerList(m.players);
-  syncItems(m.items);
-  statusEl.textContent = `已连接 · ${Math.round(pingSmoothed)}ms · ${m.players.length}/${maxPlayers} 人`;
-});
+  for (const id of [...remotes.keys()]) if (!seen.has(id)) removeRemote(id);
+  syncPlayerList(m.players || []);
+  syncItems(m.items || []);
 
-let enemyTracers = 0;
-let killCount = 0;
-// 武器拾取提示（一句话说明定位）
-const WEAPON_TIP = {
-  pistol: '稳定兜底 · 备弹无限',
-  smg: '高射速 · 适合近身泼水',
-  ak47: '中距全能 · 注意压枪',
-  shotgun: '贴脸爆发 · 远距离乏力',
-  sniper: '开镜一击致命 · 腰射极不准',
-};
+  // 模式 / 据点 / 比分 / UAV
+  H.setScores(m.scores || { alpha: 0, bravo: 0 });
+  H.setZones(zonesForHud(m.zones || []));
+  if (m.match) H.setTimer(m.match.timeLeft);
+  if (m.uav) {
+    const myUavUntil = m.uav[myTeam] || 0;
+    const left = Math.max(0, (myUavUntil - Date.now()) / 1000);
+    H.setUav(left > 0, left);
+  }
+  if (m.killstreak) H.setStreak(m.killstreak);
+  if (performance.now() - lastMinimapAt > 100) {
+    lastMinimapAt = performance.now();
+    minimapFromState(m.players, zonesForHud(m.zones || []), m.uav);
+  }
+  const pingTxt = Math.round(pingSmoothed) + 'ms';
+  H.setPing(pingTxt);
+});
 
 net.on('reload_start', (m) => {
-  sfx.reload();
-  if (local && local.reloadUntil <= 0) {
-    local.reloadTotal = m.duration || 1000;
+  if (!local) return;
+  if (local.reloadUntil <= 0) {
+    local.reloadTotal = m.duration || 1500;
     local.reloadUntil = performance.now() + local.reloadTotal;
   }
+  S.reload(local.weapon);
 });
-
-net.on('reload_done', () => { updateAmmoHud(); });
-
+net.on('reload_done', () => { if (local) { updateLocalHud({ ...snapshotSelf() }); } });
 net.on('weapon_switch', (m) => {
   if (!local) return;
   local.weapon = m.weapon;
-  local.swapUntil = performance.now() + (m.duration || 300);
-  setWeaponGun(m.weapon);
-  setWeaponHud(m.weapon);
-  updateAmmoHud();
-  updateWeaponSlots();
+  local.swapUntil = performance.now() + (m.duration || 350);
+  onWeaponChanged();
 });
+net.on('dry_fire', () => S.dryFire());
 
-net.on('dry_fire', () => { sfx.dryFire(); });
+function snapshotSelf() {
+  return { hp: local ? local.hp : 100, weapon: local ? local.weapon : 'pistol' };
+}
 
 net.on('pickup', (m) => {
   if (!m) return;
-  if (WEAPONS[m.type]) {
-    addToast(`拾取 ${WEAPONS[m.type].name} · ${WEAPON_TIP[m.type] || ''}`);
-    setWeaponGun(m.type);
-    setWeaponHud(m.type);
-    updateAmmoHud();
-    updateWeaponSlots();
-    sfx.pickup();
-  } else if (m.type === 'medkit') {
-    addToast('拾取 急救包 · 生命回满');
-    sfx.heal();
-  } else if (m.type === 'shield') {
-    addToast('拾取 护盾 · 可吸收 50 伤害');
-    sfx.pickup();
-  } else if (m.type === 'speed') {
-    addToast('拾取 加速 · 8 秒内移速提升');
-    sfx.pickup();
+  if (m.type === 'medkit') { H.addToast('拾取 医疗包 · 生命回满'); S.heal(); }
+  else if (m.type === 'shield') { H.addToast('拾取 护盾 · 可吸收伤害'); S.pickup(m.type); }
+  else if (m.type === 'speed') { H.addToast('拾取 加速 · 短时间提速'); S.pickup(m.type); }
+  else if (weaponOf(m.type) && m.type !== 'pistol') {
+    H.addToast('拾取 ' + weaponOf(m.type).name);
+    S.pickup(m.type);
+    if (local) {
+      local.owned[m.type] = true;
+      const w = weaponOf(m.type);
+      local.ammo[m.type] = { mag: w.magSize, reserve: w.reserveStart };
+      local.weapon = m.type;
+      onWeaponChanged();
+    }
   }
-});
-
-net.on('streak', (m) => {
-  if (!m) return;
-  const mine = m.playerId === myId;
-  addToast((mine ? '你' : m.name) + ' 达成 ' + m.streak + ' 连杀！');
-  if (mine) sfx.kill();
 });
 
 net.on('shot', (m) => {
   if (!started || !m || m.shooterId === myId) return;
-  if (typeof m.x !== 'number' || typeof m.dx !== 'number') return;
-  enemyTracers++;
-  const origin = new THREE.Vector3(m.x, m.y, m.z);
-  const dir = new THREE.Vector3(m.dx, m.dy, m.dz).normalize();
   const w = weaponOf(m.weapon);
-  raycaster.set(origin, dir);
-  raycaster.far = w.range;
-  const hits = raycaster.intersectObjects(world.raycastTargets, false);
-  const end = hits.length ? hits[0].point.clone() : origin.clone().addScaledVector(dir, w.range);
-  effects.tracer(origin, end, w.tracer); // 他人曳光：按武器配色
+  const pos = v3({ x: m.x, y: m.y, z: m.z });
+  const dir = new THREE.Vector3(m.dx || 0, m.dy || 0, m.dz || 0).normalize();
+  // 枪口焰（远处可见）
+  try { effects.muzzleFlash(pos, dir, m.weapon); } catch { /* ignore */ }
+  // 距离/声像
+  const dx = pos.x - camera.position.x, dy = pos.y - camera.position.y, dz = pos.z - camera.position.z;
+  const dist = Math.hypot(dx, dy, dz);
+  const rightX = Math.cos(local ? local.yaw : 0), rightZ = -Math.sin(local ? local.yaw : 0);
+  const pan = dist > 0.5 ? Math.max(-1, Math.min(1, (dx * rightX + dz * rightZ) / dist)) : 0;
+  S.shoot(m.weapon, { distance: dist, pan });
+  // 子弹擦身
+  if (local && local.alive && dist > 2) {
+    const toPlayer = new THREE.Vector3(-dx, -dy, -dz);
+    const along = toPlayer.dot(dir);
+    if (along > 0 && along < w.range) {
+      const closest = Math.hypot(toPlayer.x - dir.x * along, toPlayer.y - dir.y * along, toPlayer.z - dir.z * along);
+      if (closest < 2.2) S.whiz();
+    }
+  }
+  const r = remotes.get(m.shooterId);
+  if (r) r.target.firingUntil = performance.now() + 90;
 });
 
+let lastHitmarkerPart = null;
 net.on('hit', (m) => {
+  if (!m) return;
   if (m.targetId === myId) {
-    flashDamage(m.part === 'head');
-    if (m.part === 'head') sfx.headHurt(); else sfx.hurt();
-  } else if (m.shooterId === myId) {
-    showHitmarker(m.part, m.killed);
-    if (m.part === 'head') sfx.headshot(); else sfx.hit();
-    if (m.killed) {
-      killCount++;
-      sfx.kill();
-      const nm = (remotes.get(m.targetId) && remotes.get(m.targetId).name) || '对手';
-      addToast('击倒 ' + nm + (m.part === 'head' ? '（爆头）' : ''));
+    if (local) local.hurt(m.part === 'head' ? 0.03 : 0.014);
+    H.flashDamage(m.part === 'head');
+    if (m.shooterId && m.shooterId !== myId) {
+      const r = remotes.get(m.shooterId);
+      const sx = r ? r.group.position.x : m.x, sz = r ? r.group.position.z : m.z;
+      const dx = sx - camera.position.x, dz = sz - camera.position.z;
+      const yaw = local ? local.yaw : 0;
+      const lx = dx * Math.cos(yaw) - dz * Math.sin(yaw);
+      const lz = dx * Math.sin(yaw) + dz * Math.cos(yaw);
+      H.showDamageFrom(Math.atan2(lx, -lz));
     }
+    if (m.part === 'head') S.hurt(); else S.hurt();
+  } else if (m.shooterId === myId) {
+    lastHitmarkerPart = m.part;
+    H.showHitmarker(m.part, !!m.killed);
+    if (m.part === 'head') S.headshotConfirm(); else S.hitConfirm(m.part);
     if (typeof m.x === 'number') {
-      effects.impact(new THREE.Vector3(m.x, m.y, m.z), m.part === 'head' ? 0xf0b060 : 0x7fd4ff);
+      try { effects.bloodImpact(v3(m), _dir, m.part === 'head'); } catch { /* ignore */ }
+    }
+    const rv = remotes.get(m.targetId);
+    if (rv) rv.target.hitAt = performance.now();
+    if (m.killed) {
+      S.kill();
+      const victim = remotes.get(m.targetId);
+      H.addKillFeed({ killer: '你', victim: victim ? victim.name : '敌人', headshot: m.part === 'head', weapon: local ? local.weapon : '' });
     }
   }
 });
 
 net.on('death', (m) => {
   if (m.id === myId) {
-    showDeath(m.killerName);
-  }
-});
-
-net.on('error', (m) => {
-  connStatus.textContent = m.msg || '连接失败';
-  connStatus.className = 'status err';
-  joinBtn.disabled = false;
-});
-
-net.on('close', () => {
-  if (started) {
-    statusEl.textContent = '连接已断开';
-    showPause('连接已断开，请刷新页面重试');
+    deathVisible = true;
+    shooting = false;
+    if (local) { local.alive = false; local.aiming = false; }
+    H.showDeath('你被 ' + (m.killerName || '敌人') + ' 击倒', '重生中…');
+    S.death();
+    if (document.pointerLockElement) document.exitPointerLock();
   } else {
-    connStatus.textContent = '连接已断开';
-    connStatus.className = 'status err';
-    joinBtn.disabled = false;
+    const victim = remotes.get(m.id);
+    H.addKillFeed({ killer: m.killerName || '敌人', victim: victim ? victim.name : '玩家', headshot: m.part === 'head', weapon: m.weapon || '' });
+    if (victim) victim.target.alive = false;
   }
 });
 
+net.on('killfeed', (m) => {
+  H.addKillFeed(m);
+});
+
+net.on('zone_capture', (m) => {
+  const mine = m.team === myTeam;
+  H.addToast(`${m.zoneId || m.id || ''} 据点${mine ? '已占领' : '被敌方占领'}`);
+  S.capture(1);
+});
+net.on('zone_lost', () => { H.addToast('据点失守'); S.zoneLost(); });
+net.on('uav_start', (m) => {
+  if (m.team === myTeam) { H.addToast('UAV 侦察上线 · 敌方位置已标记'); S.uav(); }
+});
+net.on('match_end', (m) => {
+  const win = m.winner === myTeam;
+  H.showMatchEnd({ winner: m.winner, winnerTeam: m.winner, myTeam, win, scores: m.scores });
+  S.win && win ? S.win() : (S.lose && S.lose());
+  shooting = false;
+  if (document.pointerLockElement) document.exitPointerLock();
+});
+net.on('streak', (m) => {
+  const mine = m.playerId === myId;
+  H.addToast((mine ? '你' : m.name) + ' 达成 ' + m.streak + ' 连杀');
+  if (mine) S.kill();
+});
+net.on('error', (m) => {
+  setConnStatus(m.msg || '连接失败', 'err');
+  if (joinBtn) joinBtn.disabled = false;
+});
+net.on('close', () => {
+  try { stopAmbience && stopAmbience(); } catch { /* ignore */ }
+  if (started) {
+    showPause('连接已断开，请刷新页面重试');
+    H.addToast('连接已断开');
+  } else {
+    setConnStatus('连接已断开', 'err');
+    if (joinBtn) joinBtn.disabled = false;
+  }
+});
 net.on('pong', (m) => {
   const rtt = performance.now() - m.time;
   pingSmoothed = pingSmoothed * 0.8 + rtt * 0.2;
 });
 
-// ---------- 加入流程 ----------
-joinBtn.addEventListener('click', async () => {
-  initAudio();
-  const name = nickEl.value.trim() || '玩家';
-  connStatus.textContent = '连接中…';
-  connStatus.className = 'status';
-  joinBtn.disabled = true;
-  try {
-    await net.connect(wsUrl());
-    net.send({ t: 'join', name });
-    connStatus.textContent = '已连接，等待服务器确认…';
-  } catch (e) {
-    connStatus.textContent = '连接失败：' + e.message;
-    connStatus.className = 'status err';
-    joinBtn.disabled = false;
-  }
-});
-nickEl.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') joinBtn.click();
-});
-nickEl.focus();
-
-setInterval(() => net.send({ t: 'ping', time: performance.now() }), 1000);
-
-// 30Hz 实时输入上报（与渲染帧率解耦）
-setInterval(() => { if (started && local) local.sendInput(); }, 33);
-
 // ---------- 主循环 ----------
 const clock = new THREE.Clock();
-let elapsed = 0;
+const _camDir = new THREE.Vector3();
 
-let fpsEma = 0;
-let qualityTimer = 0;
-let qualityLevel = 0;   // 0=满配（含阴影） 1=降分辨率 2=关闭阴影
-function downgradeQuality() {
-  if (qualityLevel === 0) {
-    // 先关阴影：低端设备上收益最大（软件渲染环境已在 world 里直接关闭）
-    renderer.shadowMap.enabled = false;
-    if (world.sun) world.sun.castShadow = false;
-    scene.traverse((o) => {
-      if (!o.material) return;
-      for (const m of (Array.isArray(o.material) ? o.material : [o.material])) m.needsUpdate = true;
-    });
-    qualityLevel = 1;
-  } else if (qualityLevel === 1) {
-    renderer.setPixelRatio(1);           // 仍不达标再降分辨率，保流畅
-    qualityLevel = 2;
+function updateHudPerFrame() {
+  if (!local) return;
+  const w = local.weaponDef();
+  const aimingNow = local.adsAmount > 0.5;
+  const scopeNow = local.scopeActive;
+  if (lastHud.aiming !== aimingNow) { H.setAiming(aimingNow, w.sightType); lastHud.aiming = aimingNow; }
+  if (lastHud.scope !== scopeNow) {
+    H.setScope(scopeNow, w.sightType, w.scopeMagnification > 1 ? w.scopeMagnification + '×' : '');
+    lastHud.scope = scopeNow;
   }
+  if (lastHud.stance !== local.stance) { H.setStance(local.stance); lastHud.stance = local.stance; }
+  H.setStamina(local.stamina, WORLD.staminaMax);
+  const spreadPx = 14 + Math.min(local.currentSpreadRad() * 900, 60);
+  H.setCrosshair(spreadPx, { ads: aimingNow, hidden: scopeNow || !local.alive });
+  H.setReload(local.reloadProgress() || null);
+  if (!local.alive) H.setReload(null);
 }
+
 function loop() {
   requestAnimationFrame(loop);
   const rawDt = clock.getDelta();
   const dt = Math.min(rawDt, 0.05);
   if (rawDt > 0) {
     fpsEma = fpsEma * 0.92 + (1 / rawDt) * 0.08;
-    if (window.__game) window.__game.fps = Math.round(fpsEma);
-    qualityTimer += rawDt;
-    // 分两级降级，每级观察 2 秒
-    if (qualityTimer > 2) {
-      if (qualityLevel === 0 && fpsEma < 40) { downgradeQuality(); qualityTimer = 0; }
-      else if (qualityLevel === 1 && fpsEma < 30) { downgradeQuality(); qualityTimer = 0; }
+    elapsed += dt;
+    // 自适应画质：仅在 auto 模式下降档
+    if (settings.quality === 'auto') {
+      lastQualityCheck += rawDt;
+      if (lastQualityCheck > 4) {
+        lastQualityCheck = 0;
+        if (qualityLevel === 0 && fpsEma < 42 && world.setQuality) { world.setQuality('medium'); qualityLevel = 1; }
+        else if (qualityLevel === 1 && fpsEma < 30 && world.setQuality) { world.setQuality('low'); qualityLevel = 2; }
+      }
     }
   }
-  elapsed += dt;
 
   if (!started) {
-    // 菜单背景：环绕摄像机
-    const t = elapsed * 0.12;
-    const r = 26;
-    camera.position.set(Math.cos(t) * r, 14, Math.sin(t) * r);
-    camera.lookAt(0, 0, 0);
-    if (gun) gun.visible = false;
-  } else {
+    // 菜单背景：环绕镜头
+    const t = elapsed * 0.08;
+    camera.position.set(Math.cos(t) * 34, 17, Math.sin(t) * 34);
+    camera.lookAt(0, 2, 0);
+    camera.fov += (BASE_FOV - camera.fov) * Math.min(1, 6 * dt);
+    camera.updateProjectionMatrix();
+    if (world.setMenuMode) world.setMenuMode(true);
+  } else if (local) {
+    if (world.setMenuMode) world.setMenuMode(false);
+    // 开火（自动武器按住连发）
     if (shooting && local.locked && local.alive) {
-      if (local.tryFire()) { fireVisual(); updateAmmoHud(); }
+      const res = local.tryFire();
+      if (res) fireVisual(res);
     }
     local.stepFrame(dt);
-    local.renderCamera();
+    local.renderCamera(dt);
+    const rig = scope.update(dt, { player: local, elapsed });
+    if (!local.alive && scope.active) scope.active.visible = false;
+
     updateRemotes(dt);
+    updateHudPerFrame();
 
-    // ---- 枪械动画：后坐力 + 微晃 + 瞄准收枪 + 换弹下沉 + 切枪抬起 ----
-    const w = local.weaponDef();
-    recoil *= Math.exp(-12 * dt);
-    aimAmount += ((aiming ? 1 : 0) - aimAmount) * Math.min(1, 10 * dt);
-    const sway = 1 - aimAmount;
-    const gb = GUN_BASE[local.weapon] || GUN_BASE.pistol;
-    const ab = ADS_BASE[local.weapon] || ADS_BASE.pistol;
-    const rp = local.reloadProgress();      // 0~1（换弹中）
-    const sp = local.swapProgress();        // 0~1（切枪中）
-    const reloadDip = rp > 0 ? Math.sin(rp * Math.PI) : 0;
-    const swapDip = sp > 0 && sp < 1 ? (1 - sp) : 0;
-    const walk = Math.min(local.speed / 8, 1);
-    const bobX = Math.sin(elapsed * 9) * 0.010 * walk * sway;
-    const bobY = Math.abs(Math.cos(elapsed * 9)) * 0.012 * walk * sway;
-
-    gun.visible = local.alive;
-    gun.position.set(
-      gb[0] + (ab[0] - gb[0]) * aimAmount + Math.sin(elapsed * 6.5) * 0.004 * sway + bobX,
-      gb[1] + (ab[1] - gb[1]) * aimAmount + Math.sin(elapsed * 1.7) * 0.004 * sway + bobY
-        - reloadDip * 0.13 - swapDip * 0.32,
-      gb[2] + (ab[2] - gb[2]) * aimAmount + recoil
-    );
-    gun.rotation.set(
-      recoil * 1.5 + reloadDip * 0.40 + swapDip * 0.70,
-      reloadDip * 0.30,
-      reloadDip * 0.55
-    );
-
-    // 准星随当前散布扩散（移动/连发变大，ADS 收紧）
-    if (crosshairEl) {
-      crosshairEl.classList.toggle('aiming', aiming);
-      const size = 14 + Math.min(local.currentSpreadRad() * 900, 46);
-      crosshairEl.style.width = size.toFixed(1) + 'px';
-      crosshairEl.style.height = size.toFixed(1) + 'px';
+    // 世界/特效/道具
+    camera.getWorldDirection(_camDir);
+    try { setAudioListener(camera.position, _camDir); } catch { /* ignore */ }
+    if (world.update) {
+      try { world.update(dt, { camera, playerPos: local.pos, time: elapsed, aiming: local.aiming, scope: scopeNow(local) }); } catch (e) { errors.push('world.update: ' + e.message); }
     }
-
-    // 换弹进度条
-    if (reloadWrapEl) {
-      const on = rp > 0 && rp < 1;
-      reloadWrapEl.classList.toggle('hidden', !on);
-      if (on && reloadFillEl) reloadFillEl.style.width = (rp * 100).toFixed(1) + '%';
-    }
-
-    // 瞄准拉近视野（每把枪的 ADS FOV 不同）
-    const targetFov = aiming ? w.adsFov : 75;
-    if (Math.abs(camera.fov - targetFov) > 0.05) {
-      camera.fov += (targetFov - camera.fov) * Math.min(1, 12 * dt);
-      camera.updateProjectionMatrix();
+    try { effects.update(dt, camera); } catch (e) { errors.push('effects.update: ' + e.message); }
+    for (const s of itemMeshes.values()) {
+      s.bob += dt * 2.2;
+      s.group.position.y = s.baseY + 0.08 + Math.sin(s.bob) * 0.06;
+      s.group.rotation.y += dt * 1.1;
     }
   }
 
-  effects.update(dt);
-  for (const s of itemMeshes.values()) {
-    s.bob += dt * 2.4;
-    s.group.position.y = Math.sin(s.bob) * 0.12 + 0.06;
-    s.group.rotation.y += dt * 1.2;
+  // 渲染（环境模块接管后期时走它的 render）
+  try {
+    if (world.render) world.render(camera);
+    else renderer.render(scene, camera);
+  } catch (e) {
+    if (!loop._renderErr) { loop._renderErr = true; console.error(e); }
   }
-  renderer.render(scene, camera);
-  labelRenderer.render(scene, camera);
+  try { labelRenderer.render(scene, camera); } catch { /* ignore */ }
 }
-loop();
 
-// 调试辅助（供自动化测试/排查使用）
-window.__game = {
-  camera,
-  get local() { return local; },
-  get player() {
-    return local ? {
-      x: +local.pos.x.toFixed(2), y: +local.pos.y.toFixed(2), z: +local.pos.z.toFixed(2),
-      yaw: +local.yaw.toFixed(2), pitch: +local.pitch.toFixed(2), hp: local.hp, grounded: local.grounded, weapon: local.weapon,
-      sx: local.serverPos ? +local.serverPos.x.toFixed(2) : null,
-      sy: local.serverPos ? +local.serverPos.y.toFixed(2) : null,
-      sz: local.serverPos ? +local.serverPos.z.toFixed(2) : null,
-      alive: local.alive, locked: local.locked,
-      weapon: local.weapon,
-      mag: local.ammoOf().mag,
-      reserve: local.ammoOf().reserve === Infinity ? -1 : local.ammoOf().reserve,
-      owned: Object.keys(local.owned),
-      reloading: local.reloadUntil > 0,
-      recoilPitch: +local.recoilPitch.toFixed(4),
-      spread: +local.currentSpreadRad().toFixed(4),
-      aiming: local.aiming,
-    } : null;
-  },
-  get enemyTracers() { return enemyTracers; },
-  get killCount() { return killCount; },
-  get itemCount() { return itemMeshes.size; },
-  get tracerCount() { return effects.tracers.length; },
-  get remotes() {
-    return [...remotes.values()].map((r) => ({
-      name: r.name,
-      x: +r.group.position.x.toFixed(2),
-      y: +r.group.position.y.toFixed(2),
-      z: +r.group.position.z.toFixed(2),
-      hp: r.target.hp,
-      alive: r.target.alive,
-    }));
-  },
-};
+function scopeNow(l) { return !!(l && l.scopeActive); }
 
-// ---------- 自适应 ----------
+// 尺寸自适应
 window.addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(innerWidth, innerHeight);
   labelRenderer.setSize(innerWidth, innerHeight);
+  if (world.onResize) world.onResize(innerWidth, innerHeight, renderer);
 });
+
+// ---------- 初始化 HUD / 启动 ----------
+try { initHud(); } catch (e) { errors.push('initHud: ' + e.message); }
+syncSettingsFromHud();
+H.setVisible(false);
+H.setMenuVisible && H.setMenuVisible(true);
+H.showMenu && H.showMenu();
+setConnStatus('未连接');
+loop();
+
+// ---------- 调试/自动化接口 ----------
+window.__game = {
+  camera, scene, renderer, world, effects, scope, net, hud,
+  createCharacter, createWeaponModel, THREE,
+  send: (msg) => net.send(msg),
+  get started() { return started; },
+  get local() { return local; },
+  get player() {
+    if (!local) return null;
+    return {
+      x: +local.pos.x.toFixed(2), y: +local.pos.y.toFixed(2), z: +local.pos.z.toFixed(2),
+      yaw: +local.yaw.toFixed(2), pitch: +local.pitch.toFixed(2),
+      hp: local.hp, alive: local.alive, grounded: local.grounded,
+      weapon: local.weapon, stance: local.stance, sprint: local.sprinting, sliding: local.sliding,
+      stamina: +local.stamina.toFixed(1),
+      mag: local.ammoOf().mag,
+      reserve: local.ammoOf().reserve === Infinity ? -1 : local.ammoOf().reserve,
+      owned: Object.keys(local.owned),
+      reloading: local.reloadUntil > 0,
+      aiming: local.aiming, ads: +local.adsAmount.toFixed(2), scope: local.scopeActive,
+      recoilPitch: +local.recoilPitch.toFixed(4),
+      spread: +local.currentSpreadRad().toFixed(4),
+      sx: local.serverPos ? +local.serverPos.x.toFixed(2) : null,
+      sy: local.serverPos ? +local.serverPos.y.toFixed(2) : null,
+      sz: local.serverPos ? +local.serverPos.z.toFixed(2) : null,
+      locked: local.locked,
+    };
+  },
+  get remotes() {
+    return [...remotes.values()].map((r) => ({
+      id: r.id, name: r.name, team: r.team,
+      x: +r.group.position.x.toFixed(2), y: +r.group.position.y.toFixed(2), z: +r.group.position.z.toFixed(2),
+      yaw: +r.group.rotation.y.toFixed(2), hp: r.target.hp, alive: r.target.alive, weapon: r.weaponId,
+    }));
+  },
+  get serverPlayers() { return lastStateMsg ? lastStateMsg.players : []; },
+  get itemCount() { return itemMeshes.size; },
+  get enemyTracers() { return 0; },
+  get tracerCount() { return 0; },
+  get fps() { return Math.round(fpsEma); },
+  get errors() { return errors.slice(-20); },
+  get hitmarkerPart() { return lastHitmarkerPart; },
+  get scopeActive() { return local ? local.scopeActive : false; },
+  get qualityLevel() { return qualityLevel; },
+  get settings() { return settings; },
+  setQuality(q) { settings.quality = q; localStorage.setItem('sf_quality', q); if (world.setQuality) world.setQuality(q); },
+  setSens(v) { settings.sens = v; if (local) local.sens = v; },
+  get zoneState() { return lastStateMsg ? zonesForHud(lastStateMsg.zones || []) : null; },
+  get myId() { return myId; },
+  get myTeam() { return myTeam; },
+};
+
+// 供 HUD 读取地形（小地图）等的桥接
+window.__world = { heightAt, ZONES, WORLD, surfaceAt };
