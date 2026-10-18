@@ -577,7 +577,6 @@ const ALLOWED_CODES = new Set([
   'KeyW', 'KeyA', 'KeyS', 'KeyD',
   'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
   'ShiftLeft', 'ShiftRight',
-  'ControlLeft', 'ControlRight',
   'KeyC', 'Space', 'KeyR',
   // 后台命令控制台呼出键
   'Backquote', 'Enter', 'NumpadEnter', 'Escape',
@@ -747,8 +746,7 @@ window.addEventListener('keydown', (e) => {
   if (isCmdOpen()) return;
   if (e.code === 'Escape') { e.preventDefault(); try { requestLock(); } catch { /* ignore */ } }
 }, { capture: true });
-// Ctrl / Alt / Meta 松开时必须清理按键状态：
-// 浏览器在焦点变化时可能只补发 keyup 的一部分，导致"以为还按着 Ctrl"而一直蹲下/锁定输入。
+// 修饰键松开时清理按键状态（蹲下已改为只用 C 键，这里主要防止 Shift 等卡住）
 function releaseModifiers() {
   if (!local) return;
   for (const code of ['ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight',
@@ -765,8 +763,8 @@ window.addEventListener('keyup', (e) => {
 document.addEventListener('keyup', (e) => {
   if (e.code === 'Space' && local) local.jumpHeld = false;
   if (local) local.keys.delete(e.code);
-  // 松开 Ctrl 时兜底清掉所有修饰键，避免卡在蹲下状态
-  if (e.key === 'Control' || e.code === 'ControlLeft' || e.code === 'ControlRight' || e.code === '') releaseModifiers();
+  // 兜底：焦点切换后浏览器可能漏发 keyup，这里按键盘事件补齐修饰键状态
+  if (e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta' || e.code === '') releaseModifiers();
 });
 window.addEventListener('blur', () => {
   if (local) { local.keys.clear(); local.jumpHeld = false; local.aiming = false; }

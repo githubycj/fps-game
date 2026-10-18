@@ -196,7 +196,8 @@ export class LocalPlayer {
   tickStance(dt) {
     const t = now();
     const { mz } = this.moveInput();
-    const crouchHeld = this.keys.has('KeyC') || this.keys.has('ControlLeft') || this.keys.has('ControlRight');
+    // 蹲下只使用 C 键（Ctrl 是浏览器保留组合键，按住会与 Ctrl+W 等冲突）
+    const crouchHeld = this.keys.has('KeyC');
     const crouchPressed = crouchHeld && !this._crouchPrev;
     this._crouchPrev = crouchHeld;
     const shift = this.keys.has('ShiftLeft') || this.keys.has('ShiftRight');
