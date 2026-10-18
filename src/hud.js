@@ -831,6 +831,8 @@ export const hud = {
     state.sightType = st;
     const c = node('crosshair');
     if (c) c.classList.toggle('aiming', !!ads);
+    // 开镜时隐藏普通准星（机瞄/红点靠肉眼瞄具，狙击靠分划遮罩）
+    applyCrosshairVisibility();
     // 狙击开镜：由 setAiming 直接驱动遮罩；红点/机瞄永远不显示遮罩
     if (ads && isScopeSight(st)) setScopeInternal(true, st, state.zoomLabel);
     else setScopeInternal(false, st, state.zoomLabel);
@@ -963,7 +965,7 @@ export const hud = {
       bravoSide.parentElement.classList.toggle('trailing', b < a);
     }
     const target = s.target != null ? s.target : (s.scoreTarget != null ? s.scoreTarget : null);
-    if (target != null) setText(node('scoreTarget'), '先到 ' + Math.round(num(target, 240)) + ' 分');
+    if (target != null) setText(node('scoreTarget'), '先到 ' + Math.round(num(target, 420)) + ' 分');
   },
   setZones(zonesRuntime) {
     const arr = Array.isArray(zonesRuntime) ? zonesRuntime
@@ -1344,7 +1346,9 @@ function refreshZoneBar() {
 function applyCrosshairVisibility() {
   const c = node('crosshair');
   if (!c) return;
-  const hidden = !!state.crosshairHidden || (state.scopeActive && isScopeSight(state.sightType));
+  // 开镜（任何瞄具：机瞄/红点/狙击镜）都不再显示屏幕中心准星，
+  // 瞄准参考交给真实瞄具（照门/准星、红点、狙击分划）。
+  const hidden = !!state.crosshairHidden || !!state.ads || (state.scopeActive && isScopeSight(state.sightType));
   c.classList.toggle('hidden', hidden);
 }
 

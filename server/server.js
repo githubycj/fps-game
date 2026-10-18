@@ -1202,12 +1202,30 @@ function handleShoot(p, msg = {}) {
 }
 
 // AI 开火请求：走与真人相同的权威校验
+// 同帧限流：同一帧最多允许 BOT_FIRE_PER_FRAME 个 AI 开火，其余顺延到下一帧，
+// 避免"多个 AI 同时开火"瞬间产生大量子弹/命中特效/枪声音效导致客户端掉帧。
+const BOT_FIRE_PER_FRAME = 1;
+let botFireFrame = -1;
+let botFireCount = 0;
 function requestBotFire(bot, yaw, pitch) {
   if (!bot || !bot.alive) return false;
-  return handleShoot(bot, {
+  const now = Date.now();
+  if (botFireFrame !== now) { botFireFrame = now; botFireCount = 0; }
+  if (botFireCount >= BOT_FIRE_PER_FRAME) {
+    // 顺延：50~140ms 后由 AI 的 wantFire/fireAt 机制再次尝试
+    bot.fireAt = Math.max(bot.fireAt || 0, now + randInt(50, 140));
+    bot.fireYaw = typeof yaw === 'number' ? yaw : bot.yaw;
+    bot.firePitch = typeof pitch === 'number' ? pitch : bot.pitch;
+    return false;
+  }
+  botFireCount += 1;
+  const ok = handleShoot(bot, {
     yaw: typeof yaw === 'number' ? yaw : bot.yaw,
     pitch: typeof pitch === 'number' ? pitch : bot.pitch,
   });
+  // 开火后给这个 AI 一点随机抖动，避免所有人节奏同步
+  bot.nextFireAt = now + randInt(60, 180);
+  return ok;
 }
 
 // ============================================================
@@ -1924,15 +1942,39 @@ function aiUpdate(bot, now = Date.now(), ctxArg) {
 }
 
 // AI 决策循环：每 200ms 一次（spec §6.7）
+const AI_SLICE = 4;              // 把 AI 决策分散到 4 个子帧（20Hz tick → 每个 AI 约 5Hz 决策，仍是 200ms 级别）
+const AI_PER_FRAME_BUDGET = 3;   // 单帧最多跑 3 个 AI 决策
+let aiFrameSeq = 0;
+function hashSlice(id) {
+  const s = String(id || '');
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return Math.abs(h) % AI_SLICE;
+}
+
 function runAiTick(now = Date.now()) {
   // 只把“上一批”脚步声交给本 tick 的 AI（ctx.events 会在每个 bot 上被处理一次）
   const batch = aiNoiseEvents;
   aiNoiseEvents = [];
   const ctx = buildAiCtx(now, batch);
-  for (const bot of players.values()) {
-    if (!bot.bot) continue;
+  // 分摊 AI 决策：不再让所有 AI 在同一帧集中 think/开火。
+  // 每个 AI 按 id 哈希分到不同的子帧，配合 aiBudget 限制单帧最多处理个数，
+  // 避免"多个 AI 同时发现玩家 → 同一帧齐射"，这是团战掉帧的主因。
+  const bots = [];
+  for (const p of players.values()) if (p.bot && p.alive) bots.push(p);
+  if (!bots.length) return;
+  const frame = (aiFrameSeq = (aiFrameSeq + 1) % AI_SLICE);
+  const due = [];
+  for (const bot of bots) {
     bot.lastInputAt = now;
-    if (!bot.alive) continue;
+    const slice = bot.aiSlice != null ? bot.aiSlice : (bot.aiSlice = hashSlice(bot.id));
+    // 每帧只处理"轮到自己"的那一批 AI
+    if (slice === frame) due.push(bot);
+  }
+  let processed = 0;
+  for (const bot of due) {
+    if (processed >= AI_PER_FRAME_BUDGET) break;   // 超出预算留到下个切片
+    processed += 1;
     aiUpdate(bot, now, ctx);
   }
 }

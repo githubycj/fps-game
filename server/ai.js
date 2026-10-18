@@ -808,6 +808,8 @@ function chooseObjective(bot, brain, now, ctx, cfg) {
     if (owner === team && capturePush < 0.75) score += 16; // 己方据点正在被推：回防
     const claim = claims.get(z.id);
     if (claim && claim.botId !== bot.id && now - claim.at < ZONE_CLAIM_TTL) score -= 38; // 队友已去，别扎堆
+    // 更强的分散权重：避免所有 AI 都挤到中央据点叠在一起开火（会造成客户端剧烈掉帧）
+    score -= d * 0.10;
     if (score > bestScore) { bestScore = score; best = z; }
   }
   if (best) {

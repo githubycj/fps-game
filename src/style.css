@@ -810,21 +810,23 @@ b { font-weight: 700; }
 
 /* ---------- 4.5 后台命令控制台 ---------- */
 #cmdBox {
-  position: absolute;
+  position: fixed;
   left: 50%;
   bottom: 96px;
   transform: translateX(-50%);
   width: min(620px, 76vw);
-  z-index: 26;
+  /* 必须高于暂停遮罩(30)/死亡(32)/结算(34)/准备界面(33)，否则开控制台时完全看不见 */
+  z-index: 60;
   pointer-events: auto;
-  background: rgba(10, 12, 9, 0.92);
-  border: 1px solid rgba(200, 178, 110, 0.34);
+  background: rgba(10, 12, 9, 0.96);
+  border: 1px solid rgba(200, 178, 110, 0.5);
   border-radius: 4px;
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.62);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.72), 0 0 24px rgba(200, 178, 110, 0.12);
   font-family: var(--sf-mono);
   overflow: hidden;
+  display: block;
 }
-#cmdBox.hidden { display: none; }
+#cmdBox.hidden { display: none !important; }
 #cmdLog {
   max-height: 148px;
   overflow-y: auto;

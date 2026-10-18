@@ -1068,6 +1068,16 @@ net.on('pickup', (m) => {
 
 net.on('shot', (m) => {
   if (!started || !m || m.shooterId === myId) return;
+  // 调试计数：远程开火按服务器时间戳分桶，用于检查是否"同帧齐射"
+  if (window.__game) {
+    const at = m.at || Date.now();
+    const key = String(at);
+    const bucket = (window.__game.__shotBuckets || (window.__game.__shotBuckets = {}));
+    bucket[key] = (bucket[key] || 0) + 1;
+    const keys = Object.keys(bucket);
+    if (keys.length > 400) for (const k of keys.slice(0, 200)) delete bucket[k];
+    window.__game.__lastShotAt = at;
+  }
   const w = weaponOf(m.weapon);
   const eyePos = v3({ x: m.x, y: m.y, z: m.z });
   const dir = new THREE.Vector3(m.dx || 0, m.dy || 0, m.dz || 0).normalize();

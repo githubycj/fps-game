@@ -76,7 +76,7 @@ export const SUN = {
 // 据点争夺
 export const ZONE_CAPTURE_TIME = 6;     // 单人从 0 占满所需秒数
 export const ZONE_SCORE_RATE = 1;       // 每个据点每秒得分
-export const MATCH_SCORE_TARGET = 240;  // 先到分数获胜
+export const MATCH_SCORE_TARGET = 420;  // 先到分数获胜
 export const MATCH_TIME_LIMIT = 600;    // 秒
 export const UAV_KILLSTREAK = 5;        // 5 连杀触发
 export const UAV_DURATION = 10;         // 秒
