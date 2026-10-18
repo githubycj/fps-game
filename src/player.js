@@ -244,13 +244,15 @@ export class LocalPlayer {
   // 当前散布（弧度，半角）
   currentSpreadRad() {
     const w = this.weaponDef();
-    return currentSpread(w, {
+    const s = currentSpread(w, {
       moving: this.isMoving() && this.grounded,
       ads: this.adsAmount > 0.6,
       shots: Math.floor(this.spreadHeat),
       sprinting: this.sprinting,
       crouched: this.stance === 'crouch',
     });
+    // 与服务端一致：开镜射击几乎是一个点（后坐力仍然存在）
+    return this.adsAmount > 0.6 ? Math.min(s, 0.004) : s;
   }
 
   reloadProgress() {
@@ -464,6 +466,8 @@ export class LocalPlayer {
   tryFire() {
     const t = now();
     if (!this.alive || !this.locked) return null;
+    // 只允许在正式开赛后开火（main.js 通过 window.__game.matchPhase 暴露当前阶段）
+    if (typeof window !== 'undefined' && window.__game && window.__game.matchPhase && window.__game.matchPhase !== 'playing') return null;
     const w = this.weaponDef();
     if (t < this.swapUntil) return null;
     if (this.reloadUntil > 0) return null;
@@ -498,7 +502,7 @@ export class LocalPlayer {
       ads: this.adsAmount,
     };
     this.lastFireResult = result;
-    this.net.send({ t: 'shoot', yaw: this.aimYaw(), pitch: this.aimPitch() });
+    this.net.send({ t: 'shoot', yaw: this.aimYaw(), pitch: this.aimPitch(), aim: this.adsAmount > 0.5 });
 
     if (a.mag <= 0) this.requestReload();   // 打空自动换弹
     return result;
@@ -509,7 +513,7 @@ export class LocalPlayer {
     if (t - this.lastDryFire < 600) return;
     this.lastDryFire = t;
     this.lastFire = t;
-    this.net.send({ t: 'shoot', yaw: this.aimYaw(), pitch: this.aimPitch() });
+    this.net.send({ t: 'shoot', yaw: this.aimYaw(), pitch: this.aimPitch(), aim: this.adsAmount > 0.5 });
     this.requestReload();
   }
 

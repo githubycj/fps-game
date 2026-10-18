@@ -152,6 +152,8 @@ const RULES = {
   maxPlayers: W.maxPlayers || 8,
 };
 const CONSUMABLE_TYPES = ['medkit', 'shield', 'speed'];
+// 开镜射击散布上限（弧度，半角）：≈0.23°，100m 处偏差 < 40cm，几乎就是一个点
+const SCOPE_SPREAD = 0.004;
 const TICK_MS = 1000 / (W.stateHz || 20);
 const AI_DECISION_MS = Math.max(100, AI_CONFIG.tickMs || 200);
 
@@ -1047,6 +1049,12 @@ function handleShoot(p, msg = {}) {
   p.lastShotAt = now;
   p.burst = Math.min((p.burst || 0) + 1, 30);
 
+  // 瞄准状态以本次射击报文为准（右键按住时客户端逐发携带 aim:true），避免瞄准输入与开火时序错位
+  const aimingShot = typeof msg.aim === 'boolean'
+    ? msg.aim
+    : (!!p.aiming && now - (p.aimAckAt || 0) < 400);
+  if (typeof msg.aim === 'boolean') p.aiming = msg.aim;
+  if (aimingShot) p.aimAckAt = now;
   const ox = p.x, oz = p.z, oy = p.y + eyeHeightFor(p);
   const eyeDir = dirFromYawPitch(baseYaw, basePitch);
   // 广播开火：远程玩家播放枪声/枪口焰/弹壳（无曳光弹）
@@ -1067,7 +1075,7 @@ function handleShoot(p, msg = {}) {
 
   // 散布：腰射/移动/连发/冲刺/蹲/滑铲/开镜（shared currentSpread 汇总，战术散布在此追加）
   const moving = (p.speedNow || 0) > 1.2;
-  const ads = !!p.aiming && !p.sprinting && !p.sliding;
+  const ads = aimingShot && !p.sprinting && !p.sliding;
   const crouched = p.stance === 'crouch' || p.stance === 'slide';
   let spread = currentSpread(w, {
     moving, ads,
@@ -1075,6 +1083,8 @@ function handleShoot(p, msg = {}) {
     sprinting: !!p.sprinting,
     crouched,
   });
+  // 开镜：子弹几乎是一个点（保留极小随机量，后坐力仍然存在，需要玩家压枪）
+  if (ads) spread = Math.min(spread, SCOPE_SPREAD);
   if (p.sliding) spread *= 1.5;   // 滑铲射击极不稳定
   const pellets = Math.max(1, Math.round(w.pellets || 1));
   const range = w.range ?? W.shootRange ?? 200;

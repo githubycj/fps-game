@@ -167,11 +167,9 @@ function labelHTML(name, color, bot, team) {
 function setRemoteWeapon(r, id) {
   if (r.weaponId === id) return;
   r.weaponId = id;
-  let model = remoteWeaponCache.get(id);
-  if (!model) {
-    model = createWeaponModel(id, { simple: true });
-    remoteWeaponCache.set(id, model);
-  }
+  // 每个角色独占一份武器模型：共享同一 Group 被多个角色 attach 时会被搬走/克隆，
+  // 容易导致枪口位置错乱、武器方向异常
+  let model = createWeaponModel(id, { simple: true });
   r.char.attachWeapon(model);
 }
 
@@ -350,7 +348,8 @@ function fireVisual(result) {
   // 客户端的视觉弹着预测（服务器权威命中另发 hit 消息）
   camera.getWorldPosition(_origin);
   _origin.y -= 0.06;
-  const spread = result ? result.spread : local.currentSpreadRad();
+    // 客户端视觉弹着预测（服务器权威命中另发 hit 消息）；开镜时与实际弹道一致（几乎一个点）
+    const spread = local.adsAmount > 0.6 ? Math.min(result ? result.spread : 0, 0.004) : (result ? result.spread : local.currentSpreadRad());
   const pellets = Math.max(1, Math.min(w.pellets || 1, 6));
   for (let i = 0; i < pellets; i++) {
     const d = _dir.clone();
@@ -553,23 +552,40 @@ document.addEventListener('keydown', (e) => {
     if (local && local.locked && local.alive && local.grounded) S.jump();
     if (local) local.jumpHeld = true;
   }
-  if (local && started && !e.repeat) {
-    if (local.locked && local.alive) {
-      const m = /^(?:Digit|Numpad)([1-5])$/.exec(e.code);
-      if (m) {
-        const id = WEAPON_ORDER[Number(m[1]) - 1];
-        if (id && local.requestSwitch(id)) { S.switchWeapon(); onWeaponChanged(); }
-      }
-      if (e.code === 'KeyR') {
-        if (local.requestReload()) { S.reload(local.weapon); H.setReload(0.001); }
-      }
-      if (e.code === 'KeyQ') {
-        if (local.cycleWeapon(-1)) { S.switchWeapon(); onWeaponChanged(); }
-      }
-    }
+  if (local && started && !e.repeat && local.locked && local.alive && e.code === 'KeyR') {
+    if (local.requestReload()) { S.reload(local.weapon); H.setReload(0.001); }
   }
   if (local) local.keys.add(e.code);
 });
+
+// ---------- 快捷键屏蔽 ----------
+// 只保留游戏必需的按键：WASD、Shift(冲刺)、C/Ctrl(蹲)、空格、R(换弹)、Mouse 左右键；
+// 其余（数字键切枪、Q、B、Tab、F1、Esc 等浏览器/游戏快捷键）一律拦截，避免误触影响操作。
+// 玩家仍可通过鼠标滚轮切换已持有的武器。
+const ALLOWED_CODES = new Set([
+  'KeyW', 'KeyA', 'KeyS', 'KeyD',
+  'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
+  'ShiftLeft', 'ShiftRight',
+  'ControlLeft', 'ControlRight',
+  'KeyC', 'Space', 'KeyR',
+]);
+function blockShortcuts(e) {
+  // 菜单输入框内不拦截（昵称输入）
+  const tag = (e.target && e.target.tagName) || '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
+  const code = e.code || '';
+  if (ALLOWED_CODES.has(code)) return;
+  // 其余按键一律拦截：阻止浏览器的切标签/刷新/搜索等默认行为，也不触发游戏动作
+  e.preventDefault();
+  e.stopPropagation();
+}
+window.addEventListener('keydown', blockShortcuts, { capture: true });
+window.addEventListener('keyup', blockShortcuts, { capture: true });
+window.addEventListener('keypress', blockShortcuts, { capture: true });
+// Esc 会退出指针锁：拦截并锁定（游戏内不需要 Esc）
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Escape') { e.preventDefault(); try { requestLock(); } catch { /* ignore */ } }
+}, { capture: true });
 document.addEventListener('keyup', (e) => {
   if (e.code === 'Space' && local) local.jumpHeld = false;
   if (local) local.keys.delete(e.code);
