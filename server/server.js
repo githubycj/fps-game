@@ -136,8 +136,9 @@ const shotDamage = weaponsMod.shotDamage || ((w, { part = 'body', dist = 0 } = {
 
 // 服务器私有规则（shared 未定义的部分，集中在这里，便于 Lead/HUD 对齐）
 const RULES = {
-  shieldMax: 100,             // 钢制插板（护甲）上限：出生自带，只保护躯干
-  armorReduce: 0.8,           // 躯干伤害 80% 由插板吸收，20% 进入生命
+  shieldMax: 100,             // 钢制插板（护甲）上限：出生自带
+  armorReduce: 0.8,           // 躯干减伤比例（保留给旧接口/说明）
+  armorAbsorb: { body: 0.8, legs: 0.55, head: 0.3 },  // 各部位被命中时插板吸收比例
   matchCountdown: 10,         // 真人按空格后 10 秒倒计时
   speedBoostMs: 8000,         // 加速道具持续
   speedBoostMult: 1.5,        // 加速移速倍率
@@ -1139,18 +1140,20 @@ function handleShoot(p, msg = {}) {
     const part = rec.head > 0 ? 'head' : (rec.legs > 0 && rec.body === 0 ? 'legs' : 'body');
     let dmg = rec.dmg;
     let absorbed = 0;
-    // 钢制插板：出生自带，只保护躯干。躯干伤害 80% 由插板吸收、20% 进入生命；
-    // 头部/腿部不享受护甲减免（保留爆头价值）。
-    if (part === 'body' && (target.shield || 0) > 0) {
-      const toPlate = dmg * RULES.armorReduce;
+    // 钢制插板：出生自带。任何部位被命中都会消耗插板（所以护甲一定会掉），
+    // 但吸收比例不同：躯干 80%（主防护）/ 腿 55% / 头 30%（爆头依然致命，只是插板崩边）。
+    const absorbRatio = (RULES.armorAbsorb && RULES.armorAbsorb[part]) || 0;
+    if (absorbRatio > 0 && (target.shield || 0) > 0) {
+      const toPlate = dmg * absorbRatio;
       absorbed = Math.min(target.shield, toPlate);
       target.shield = Math.max(0, target.shield - absorbed);
       const overflow = toPlate - absorbed;   // 插板被打穿后的溢出部分
-      dmg = dmg * (1 - RULES.armorReduce) + overflow;
+      dmg = dmg * (1 - absorbRatio) + overflow;
     }
     dmg = Math.max(0, Math.round(dmg));
     if (dmg > 0) target.hp = Math.max(0, target.hp - dmg);
     target.lastDamageAt = nowAfter;
+    if (absorbed > 0) target.lastArmorHitAt = nowAfter;
     const killed = target.hp <= 0;
     const point = rec.point || { x: ox, y: oy, z: oz };
     const hitMsg = {

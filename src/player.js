@@ -162,8 +162,14 @@ export class LocalPlayer {
   }
 
   // 实际瞄准方向 = 基础视角 + 后坐力累积（玩家下拉鼠标即为压枪）
-  aimYaw() { return this.yaw + this.recoilYaw; }
-  aimPitch() { return clamp(this.pitch + this.recoilPitch, -1.55, 1.55); }
+  // 射击方向 = 实际渲染视角（含后坐力/摇晃/呼吸），保证"准星指哪打哪"
+  aimYaw() {
+    return this.viewYaw != null ? this.viewYaw : this.yaw + this.recoilYaw;
+  }
+  aimPitch() {
+    const p = this.viewPitch != null ? this.viewPitch : this.pitch + this.recoilPitch;
+    return clamp(p, -1.55, 1.55);
+  }
 
   isMoving() {
     for (const k of this.keys) {
@@ -447,11 +453,14 @@ export class LocalPlayer {
 
     this.camera.position.set(x + bobX, y + this.eye - this.landDip + bobY, z);
     this.camera.rotation.order = 'YXZ';
-    this.camera.rotation.set(
-      clamp(this.pitch + this.recoilPitch + this.shakePitch + breathPitch, -1.55, 1.55),
-      this.yaw + this.recoilYaw + this.shakeYaw + breathYaw,
-      roll,
-    );
+    // 最终视角 = 输入 yaw/pitch + 后坐力 + 摇晃 + 狙击呼吸摆动。
+    // 射击方向必须使用这个"最终视角"，否则准星/分划指向与实际弹道不一致，
+    // 距离越远偏差越大（这是"狙击枪开镜打不中"的根因）。
+    const viewPitch = clamp(this.pitch + this.recoilPitch + this.shakePitch + breathPitch, -1.55, 1.55);
+    const viewYaw = this.yaw + this.recoilYaw + this.shakeYaw + breathYaw;
+    this.viewPitch = viewPitch;
+    this.viewYaw = viewYaw;
+    this.camera.rotation.set(viewPitch, viewYaw, roll);
 
     // FOV：开镜平滑过渡（狙击枪真实放大）
     const w = this.weaponDef();

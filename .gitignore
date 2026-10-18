@@ -1,4 +1,4 @@
-﻿node_modules/
+node_modules/
 dist/
 *.log
 .DS_Store
@@ -6,3 +6,8 @@ dist/
 # 浏览器测试截图产物
 shoot_scene.png
 death_screen.png
+
+# 缓存/临时目录（统一放在项目所在的 E 盘，避免 C 盘 ENOSPC）
+.npm-cache/
+.tmp/
+.vite-cache/

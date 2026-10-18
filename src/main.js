@@ -521,6 +521,17 @@ document.addEventListener('mousemove', (e) => {
 });
 
 document.addEventListener('contextmenu', (e) => e.preventDefault());
+// 屏蔽浏览器（Edge/Chrome）的额外默认行为：中键自动滚动、拖拽、双击选中、Ctrl+滚轮缩放
+document.addEventListener('auxclick', (e) => { if (e.button === 1) e.preventDefault(); });
+document.addEventListener('mousedown', (e) => { if (e.button === 1) e.preventDefault(); });
+document.addEventListener('dragstart', (e) => e.preventDefault());
+document.addEventListener('drop', (e) => e.preventDefault());
+document.addEventListener('dragover', (e) => e.preventDefault());
+document.addEventListener('selectstart', (e) => {
+  const tag = (e.target && e.target.tagName) || '';
+  if (tag !== 'INPUT' && tag !== 'TEXTAREA') e.preventDefault();
+});
+window.addEventListener('wheel', (e) => { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
 document.addEventListener('mousedown', (e) => {
   if (!started || !local) return;
   initAudio();
@@ -574,10 +585,16 @@ function blockShortcuts(e) {
   const tag = (e.target && e.target.tagName) || '';
   if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
   const code = e.code || '';
+  // 1) Ctrl / Alt / Win(Cmd) 组合键一律屏蔽：Ctrl+S 保存、Ctrl+D 收藏、Ctrl+Shift+B 收藏夹栏、
+  //    Ctrl+H 历史、Ctrl+J 下载、Ctrl+P 打印、Ctrl+U 源码、Ctrl+W 关标签、Alt+←/→ 前进后退等 Edge 快捷键。
+  //    只 preventDefault，不 stopPropagation —— 否则会打断游戏自己的按键监听（Ctrl 蹲下）。
+  if (e.ctrlKey || e.metaKey || e.altKey) {
+    e.preventDefault();
+    return;
+  }
+  // 2) 白名单以外的单键一律拦截（F1~F12、Tab、F5、编辑键等）
   if (ALLOWED_CODES.has(code)) return;
-  // 其余按键一律拦截：阻止浏览器的切标签/刷新/搜索等默认行为，也不触发游戏动作
   e.preventDefault();
-  e.stopPropagation();
 }
 window.addEventListener('keydown', blockShortcuts, { capture: true });
 window.addEventListener('keyup', blockShortcuts, { capture: true });
