@@ -940,8 +940,15 @@ net.on('god_block', (m) => {
 net.on('env', (m) => {
   const mode = m && m.mode === 'dark' ? 'dark' : 'day';
   try { world.setEnv(mode); } catch (err) { errors.push('env: ' + err.message); }
-  H.addToast(mode === 'dark' ? '天黑了下来…' : '天亮了');
+  H.addToast(mode === 'dark' ? '天黑了：枪口焰会照亮周围' : '天亮了');
 });
+
+// 昼夜 → 特效层（夜间枪口焰更亮 + 脚下补光），由 world.setEnv 统一回调
+try {
+  world.onEnvChange((mode) => {
+    try { effects.setNightMode(mode === 'dark'); } catch { /* ignore */ }
+  });
+} catch { /* ignore */ }
 
 function remotesListForHud() {
   return [...remotes.values()].map((r) => ({

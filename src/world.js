@@ -179,6 +179,7 @@ export function buildWorld(scene, renderer, opts = {}) {
   };
   let envMode = 'day';
   let envT = 0;          // 0 = 白天，1 = 黑夜
+  let envListener = null;
   const _c1 = new THREE.Color();
   function applyEnv(t) {
     const lerp = THREE.MathUtils.lerp;
@@ -225,8 +226,14 @@ export function buildWorld(scene, renderer, opts = {}) {
       envT = m === 'dark' ? 1 : 0;
       applyEnv(envT);
     }
+    // 通知特效/其他子系统（夜间枪口焰照明加强）
+    if (typeof envListener === 'function') {
+      try { envListener(m); } catch { /* ignore */ }
+    }
     return { mode: envMode, t: envT };
   }
+  // 注册昼夜变化回调（main.js 用来同步 effects 的夜间模式）
+  function onEnvChange(fn) { envListener = fn; }
   function updateEnv(dt) {
     const target = envMode === 'dark' ? 1 : 0;
     if (Math.abs(envT - target) < 0.001) {
@@ -308,6 +315,7 @@ export function buildWorld(scene, renderer, opts = {}) {
     render,
     dispose,
     setEnv,
+    onEnvChange,
     get envMode() { return envMode; },
     get envT() { return envT; },
     // 调试/自测：统计场景静态 draw call（按材质/对象数粗略估计）

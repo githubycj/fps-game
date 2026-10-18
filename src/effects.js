@@ -15,7 +15,7 @@ import * as THREE from 'three';
 const MAX_SYSTEMS = 256;   // 粒子系统池上限（契约要求）
 const MAX_FLASHES = 10;    // 同时存在的枪口焰对象上限
 const MAX_SHELLS = 16;     // 弹壳池上限
-const MAX_LIGHTS = 3;      // 常驻点光池数量（复用以避免灯光数量变化导致 shader 重编译）
+const MAX_LIGHTS = 5;      // 常驻点光池数量（夜间枪口焰需要 3 盏，预留余量；固定数量避免 shader 重编译）
 const CAP = 48;            // 单个粒子系统容量
 
 // 常用临时向量（单线程使用，避免每次分配）
@@ -91,7 +91,10 @@ function makeFlashTexture() {
   }
 }
 
-// 枪口焰参数：不同枪型的焰口大小、持续时长（40~70ms）、点光强度。
+// 夜间（/dark）增强：枪口焰更亮更大、点光更强更远，让脚下地面明显被照亮
+// 夜间（/dark）增强：枪口焰更亮、点光更强更远，让脚下地面明显被照亮。
+// size 只小幅放大（过于夸张会露出 sprite 方形边缘），亮度主要交给点光和 sprite 颜色。
+const NIGHT_GAIN = { size: 1.15, light: 2.4, distance: 1.6 };
 // 尺寸刻意偏小：第一人称枪口离相机约 0.5m，过大的 sprite 会遮挡视野中心。
 const FLASH_KINDS = {
   pistol: { life: 0.045, size: 0.16, light: 5, distance: 5.5, color: 0xffd28a, smoke: 3 },
@@ -317,6 +320,14 @@ export class Effects {
     this.lightsOn = q.lights;
   }
 
+  // 夜间模式开关（/dark 时为 true）：枪口焰更亮、点光更强，照亮脚下地面
+  setNightMode(on) {
+    this.nightMode = !!on;
+  }
+  get _flashGain() {
+    return this.nightMode ? NIGHT_GAIN : { size: 1, light: 1, distance: 1 };
+  }
+
   // ---------- 粒子系统池 ----------
 
   _acquireSystem() {
@@ -434,7 +445,7 @@ export class Effects {
     sprite.scale.setScalar(0.35);
     group.add(sprite);
     // 方向性火舌：沿枪管方向的开口锥体（只在枪口处 0.3m 内，不沿弹道延伸）
-    const coneGeo = new THREE.ConeGeometry(0.07, 0.3, 6, 1, true);
+    const coneGeo = new THREE.ConeGeometry(0.032, 0.19, 6, 1, true);
     const coneMat = new THREE.MeshBasicMaterial({
       color: 0xffb45e,
       transparent: true,
@@ -562,9 +573,10 @@ export class Effects {
 
     const f = this._acquireFlash();
     if (!f) return;
+    const gain = this._flashGain;      // 夜间更亮更大
     f.active = true;
     f.life = f.maxLife = life;
-    f.size = k.size;
+    f.size = k.size * gain.size;
     // 位置略沿枪管前移，避免焰体贴在枪口模型里
     f.group.position.set(
       pos.x + dir.x * 0.03,
@@ -574,19 +586,34 @@ export class Effects {
     // 锥体几何默认朝 +Y，旋转到枪管方向；sprite 始终面向相机
     f.cone.quaternion.setFromUnitVectors(_up, dir);
     f.cone.position.set(dir.x * 0.16, dir.y * 0.16, dir.z * 0.16);
-    f.cone.scale.setScalar(0.6 + k.size);
+    // 火舌尺寸：跟随武器口径，但夜间克制放大（否则会变成一大块多面体）
+    const coneScale = (0.6 + f.size) * (this.nightMode ? 0.85 : 1);
+    f.cone.scale.setScalar(coneScale);
     f.sprite.position.set(dir.x * 0.05, dir.y * 0.05, dir.z * 0.05);
-    f.sprite.scale.setScalar(k.size);
+    f.sprite.scale.setScalar(f.size);
     f.sprite.material.color.set(k.color);
     f.sprite.material.opacity = 1;
-    f.cone.material.color.set(k.color);
-    f.cone.material.opacity = 0.9;
+    // 夜间：只把面向相机的 sprite 提亮（视觉上"爆亮"），
+    // 锥体（火舌）保持半透明橙色，否则加色混合会把它烧成一整块纯白多面体。
+    if (this.nightMode) {
+      f.sprite.material.color.lerp(new THREE.Color(0xffffff), 0.75);
+      f.cone.material.color.set(k.color);
+      f.cone.material.opacity = 0.55;
+    } else {
+      f.cone.material.color.set(k.color);
+      f.cone.material.opacity = 0.9;
+    }
     if (this.scene) this.scene.add(f.group);
     this.activeFlashes.push(f);
 
     // 点光：照亮周围墙体/地面，但不参与着色器重编译（常驻灯池）
     _tmpA.set(pos.x + dir.x * 0.06, pos.y + dir.y * 0.06, pos.z + dir.z * 0.06);
-    this._pulseLight(_tmpA, k.color, k.light, life * 1.2, k.distance);
+    this._pulseLight(_tmpA, k.color, k.light * gain.light, life * 1.2, k.distance * gain.distance);
+    // 夜间额外一盏"向下照"的补光：确保脚下地面被枪口焰照亮
+    if (this.nightMode) {
+      _tmpB.set(pos.x, Math.max(0.25, pos.y - 0.45), pos.z);
+      this._pulseLight(_tmpB, 0xffc880, k.light * 1.1, life * 1.6, k.distance * 1.3);
+    }
 
     // 枪口烟：少量灰色慢速上浮粒子（普通混合，避免发亮）
     this._emit({
@@ -683,9 +710,10 @@ export class Effects {
         jitter: 0.03,
       });
     }
-    // 石头/金属：短促火花照明（低画质关闭）
+    // 石头/金属：短促火花照明（低画质关闭）；夜间更亮，让弹着点周围也能看见
     if ((sKey === 'stone' || sKey === 'metal') && this.lightsOn) {
-      this._pulseLight(_tmpB.copy(pos).addScaledVector(n, 0.08), 0xffd8a0, 2.2, 0.05, 4);
+      const nightMul = this.nightMode ? 2.4 : 1;
+      this._pulseLight(_tmpB.copy(pos).addScaledVector(n, 0.08), 0xffd8a0, 2.2 * nightMul, 0.05, 4 * (this.nightMode ? 1.5 : 1));
     }
   }
 
