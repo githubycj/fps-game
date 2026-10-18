@@ -116,7 +116,7 @@ function updateSensLabel() {
 // ---------- HUD 状态（同时作为 window.__hud 暴露给自动化测试） ----------
 const state = {
   hp: 100, hpMax: 100,
-  shield: 0, shieldMax: 50,
+  shield: 0, shieldMax: 100,
   stamina: 100, staminaMax: 100,
   stance: 'stand',
   weapon: 'pistol', weaponName: '手枪', mag: 0, reserve: 0,
@@ -130,6 +130,7 @@ const state = {
   players: [], selfId: null,
   menuVisible: true, hudVisible: false,
   paused: false, dead: false, matchEnd: false, winner: null,
+  warmupVisible: false, matchPhase: 'waiting', countdown: 0,
   heading: 0,
   minimap: { x: 0, z: 0, yaw: 0, allies: [], enemies: [], zones: [], uav: false },
 };
@@ -716,7 +717,7 @@ export const hud = {
     }
   },
   setShield(v0, max) {
-    const m = num(max, state.shieldMax) || 50;
+    const m = num(max, state.shieldMax) || 100;
     const v = clamp(num(v0, 0), 0, m);
     state.shield = v;
     state.shieldMax = m;
@@ -1093,6 +1094,52 @@ export const hud = {
     const p = node('pause');
     if (p) p.classList.add('hidden');
     state.paused = false;
+  },
+
+  // ---------- 开局准备 / 倒计时 ----------
+  showWarmup(title, sub) {
+    const root = node('warmup');
+    if (!root) return;
+    setText(node('warmupTitle'), title || '按 空格 开始战斗');
+    setText(node('warmupSub'), sub || '点击画面锁定鼠标 · 按空格开始 10 秒倒计时');
+    const count = node('warmupCount');
+    if (count) count.classList.add('hidden');
+    root.classList.remove('hidden');
+    state.warmupVisible = true;
+    state.matchPhase = 'waiting';
+  },
+  hideWarmup() {
+    const root = node('warmup');
+    if (root) root.classList.add('hidden');
+    state.warmupVisible = false;
+  },
+  setCountdown(sec) {
+    const root = node('warmup');
+    const countEl = node('warmupCount');
+    if (!root || !countEl) return;
+    const n = Math.max(0, Math.ceil(num(sec, 0)));
+    state.countdown = n;
+    state.matchPhase = 'countdown';
+    root.classList.remove('hidden');
+    state.warmupVisible = true;
+    setText(node('warmupTitle'), '准备开始');
+    setText(node('warmupSub'), '战斗即将开始');
+    countEl.classList.remove('hidden');
+    setText(countEl, n > 0 ? String(n) : 'GO');
+  },
+  setMatchPhase(phase, countdown) {
+    const p = String(phase || 'waiting');
+    if (p === 'waiting') {
+      this.showWarmup('按 空格 开始战斗', '点击画面锁定鼠标 · 按空格开始 10 秒倒计时');
+      return;
+    }
+    if (p === 'countdown') {
+      this.setCountdown(countdown);
+      return;
+    }
+    state.matchPhase = p === 'playing' ? 'playing' : p;
+    state.countdown = 0;
+    this.hideWarmup();
   },
   showMatchEnd(info) {
     const d = info || {};

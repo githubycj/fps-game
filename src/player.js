@@ -41,6 +41,7 @@ export class LocalPlayer {
     this.locked = false;
     this.alive = true;
     this.hp = WORLD.maxHp;
+    this.shield = 0;
     this.team = 'alpha';
 
     // ---- 姿态 / 体力 ----
@@ -122,6 +123,7 @@ export class LocalPlayer {
     this.serverPos = null;
     this.alive = true;
     this.hp = WORLD.maxHp;
+    this.shield = 0;
     this.aiming = false;
     this.adsAmount = 0;
     this.scopeActive = false;
@@ -561,6 +563,7 @@ export class LocalPlayer {
     const wasAlive = this.alive;
     this.alive = me.alive;
     this.hp = me.hp;
+    this.shield = me.shield || 0;
     this.syncWeaponFromServer(me);
     if (me.alive && !wasAlive) this.reset({ x: me.x, z: me.z }, me.team || this.team);
   }

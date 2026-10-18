@@ -33,6 +33,7 @@ const HUD_METHODS = [
   'setScores', 'setZones', 'setTimer', 'setUav', 'setKills', 'setDeaths', 'setPing', 'setPlayers',
   'addKillFeed', 'addToast', 'setStreak',
   'showDeath', 'hideDeath', 'showPause', 'hidePause',
+  'showWarmup', 'hideWarmup', 'setCountdown', 'setMatchPhase',
   'showMatchEnd', 'hideMatchEnd',
   'setMinimapState', 'setVisible', 'setStatus',
 ];
@@ -128,6 +129,9 @@ let started = false;
 let local = null;
 let deathVisible = false;
 let shooting = false;
+let matchPhase = 'waiting';
+let matchCountdown = 0;
+let lastCountdownShown = -1;
 let pingSmoothed = 0;
 let elapsed = 0;
 let fpsEma = 0;
@@ -376,7 +380,7 @@ function playerListForHud(players) {
 function updateLocalHud(me) {
   if (!me || !local) return;
   if (typeof me.hp === 'number') H.setHp(Math.max(0, Math.round(me.hp)), WORLD.maxHp);
-  if (typeof me.shield === 'number') H.setShield(me.shield, 50);
+  if (typeof me.shield === 'number') H.setShield(me.shield, 100);
   if (typeof me.kills === 'number') H.setKills(me.kills);
   if (typeof me.deaths === 'number') H.setDeaths(me.deaths);
   H.setStance(local.stance);
@@ -505,7 +509,7 @@ document.addEventListener('pointerlockchange', () => {
   const locked = document.pointerLockElement === canvas;
   if (local) local.locked = locked;
   if (locked) hidePause();
-  else if (started && local && local.alive && !deathVisible) {
+  else if (started && local && local.alive && !deathVisible && matchPhase === 'playing') {
     shooting = false;
     if (local) local.aiming = false;
     showPause('已暂停 · 点击画面继续');
@@ -520,6 +524,7 @@ document.addEventListener('contextmenu', (e) => e.preventDefault());
 document.addEventListener('mousedown', (e) => {
   if (!started || !local) return;
   initAudio();
+  if (matchPhase !== 'playing') return;
   if (e.button === 0 && local.locked && local.alive) shooting = true;
   if (e.button === 2 && local.locked && local.alive) local.aiming = true;
 });
@@ -536,6 +541,14 @@ window.addEventListener('wheel', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     e.preventDefault();
+    // 开局等待阶段：空格 = 开始 10 秒倒计时
+    if (started && matchPhase === 'waiting') {
+      net.send({ t: 'ready' });
+      H.setMatchPhase('countdown', 10);
+      return;
+    }
+    // 未开赛不跳跃
+    if (matchPhase !== 'playing') { if (local) local.jumpHeld = false; return; }
     if (local && local.locked && local.alive && local.grounded) S.jump();
     if (local) local.jumpHeld = true;
   }
@@ -578,6 +591,11 @@ deathEl && deathEl.addEventListener('click', () => {
   if (!local || !local.alive || document.pointerLockElement) return;
   requestLock();
 });
+// 开局准备遮罩：点击画面锁定鼠标（空格开始由键盘处理）
+const warmupEl = document.getElementById('warmup');
+warmupEl && warmupEl.addEventListener('click', () => {
+  if (!document.pointerLockElement) requestLock();
+});
 
 function onWeaponChanged() {
   if (!local) return;
@@ -586,6 +604,38 @@ function onWeaponChanged() {
   H.setWeapon(local.weapon, w.name, local.ammoOf().mag, local.ammoOf().reserve === Infinity ? -1 : local.ammoOf().reserve);
   H.setWeaponSlots(local.owned, local.weapon, WEAPON_ORDER);
   lastHud.weapon = local.weapon;
+}
+
+// ---------- 开局准备 / 倒计时状态 ----------
+function applyMatchInfo(match) {
+  if (!match || !match.phase) return;
+  const prev = matchPhase;
+  matchPhase = match.phase;
+  matchCountdown = Math.max(0, Math.ceil(match.countdown || 0));
+  H.setMatchPhase(matchPhase, matchCountdown);
+  if (matchPhase === 'waiting') {
+    H.hidePause();
+    H.hideMatchEnd();
+    shooting = false;
+  } else if (matchPhase === 'countdown') {
+    H.hidePause();
+    H.hideMatchEnd();
+    if (matchCountdown !== lastCountdownShown) {
+      lastCountdownShown = matchCountdown;
+      if (matchCountdown > 0) S.uiClick();
+    }
+  } else if (matchPhase === 'playing') {
+    H.hideWarmup();
+    if (prev !== 'playing') {
+      H.hideMatchEnd();
+      H.addToast('战斗开始');
+      if (local && local.alive && !deathVisible && !document.pointerLockElement) {
+        showPause('点击画面继续战斗');
+      }
+    }
+  } else if (matchPhase === 'ended') {
+    H.hideWarmup();
+  }
 }
 
 // ---------- 网络事件 ----------
@@ -615,7 +665,13 @@ net.on('welcome', (m) => {
   H.setZones(zonesForHud(m.zones || []));
   H.setTimer(m.match && m.match.timeLeft);
   syncItems(m.items || []);
-  if (!deathVisible) showPause('点击画面进入战斗');
+  applyMatchInfo(m.match);
+  // 等待阶段用"按空格开始"覆盖层；已有指针锁/进行中才显示暂停提示
+  if (m.match && m.match.phase !== 'waiting' && m.match.phase !== 'countdown' && !deathVisible) {
+    showPause('点击画面进入战斗');
+  } else {
+    H.hidePause();
+  }
   startAmbience && startAmbience();
 });
 
@@ -691,7 +747,10 @@ net.on('state', (m) => {
   // 模式 / 据点 / 比分 / UAV
   H.setScores(m.scores || { alpha: 0, bravo: 0 });
   H.setZones(zonesForHud(m.zones || []));
-  if (m.match) H.setTimer(m.match.timeLeft);
+  if (m.match) {
+    H.setTimer(m.match.timeLeft);
+    applyMatchInfo(m.match);
+  }
   if (m.uav) {
     const myUavUntil = m.uav[myTeam] || 0;
     const left = Math.max(0, (myUavUntil - Date.now()) / 1000);
@@ -730,7 +789,7 @@ function snapshotSelf() {
 net.on('pickup', (m) => {
   if (!m) return;
   if (m.type === 'medkit') { H.addToast('拾取 医疗包 · 生命回满'); S.heal(); }
-  else if (m.type === 'shield') { H.addToast('拾取 护盾 · 可吸收伤害'); S.pickup(m.type); }
+  else if (m.type === 'shield') { H.addToast('拾取 钢制插板 · 恢复护甲'); S.pickup(m.type); }
   else if (m.type === 'speed') { H.addToast('拾取 加速 · 短时间提速'); S.pickup(m.type); }
   else if (weaponOf(m.type) && m.type !== 'pistol') {
     H.addToast('拾取 ' + weaponOf(m.type).name);
@@ -841,6 +900,15 @@ net.on('killfeed', (m) => {
   H.addKillFeed(m);
 });
 
+net.on('match_countdown', (m) => {
+  lastCountdownShown = -1;
+  H.setMatchPhase('countdown', (m && m.seconds) || 10);
+  S.uiClick();
+});
+net.on('match_start', () => {
+  H.hideWarmup();
+  H.addToast('战斗开始 · 占领 A/B/C 据点');
+});
 net.on('zone_capture', (m) => {
   const mine = m.team === myTeam;
   H.addToast(`${m.zoneId || m.id || ''} 据点${mine ? '已占领' : '被敌方占领'}`);
@@ -979,6 +1047,71 @@ window.addEventListener('resize', () => {
   if (world.onResize) world.onResize(innerWidth, innerHeight, renderer);
 });
 
+// ---------- 预编译材质/着色器：把"进入游戏第一帧"的卡顿提前到主菜单阶段 ----------
+function prewarmAssets() {
+  if (!scene || !camera || !renderer) return;
+  let warm = null;
+  const extraGroups = [];
+  try {
+    warm = new THREE.Group();
+    warm.name = 'prewarm';
+    warm.position.set(0, -300, 0);
+    scene.add(warm);
+    // 角色材质（远程玩家首次出现时不再编译）
+    const ch = createCharacter({ color: 0x8a93a6, team: 'alpha', variant: 1 });
+    ch.root.position.set(0, -300, 0);
+    warm.add(ch.root);
+    // 全部第一/第三人称武器模板材质
+    for (const id of WEAPON_ORDER) {
+      const g = createWeaponModel(id, { firstPerson: false });
+      g.position.set(2, -300, 0);
+      warm.add(g);
+      extraGroups.push(g);
+    }
+    // 拾取物模型材质
+    for (const type of ['ak47', 'sniper', 'shotgun', 'medkit', 'shield', 'speed']) {
+      try {
+        const g = world.createItemMesh ? world.createItemMesh(type) : null;
+        if (g) { g.position.set(-3, -300, 0); warm.add(g); extraGroups.push(g); }
+      } catch { /* ignore */ }
+    }
+    // 战斗特效材质（粒子/枪口焰/血雾）
+    try {
+      effects.muzzleFlash(new THREE.Vector3(0, -300, 0), new THREE.Vector3(0, 0, -1), 'sniper');
+      effects.impact(new THREE.Vector3(0, -300, 0), new THREE.Vector3(0, 1, 0), 'dirt', 'ak47');
+      effects.bloodImpact(new THREE.Vector3(0, -300, 0), new THREE.Vector3(0, 0, 1), true);
+    } catch { /* ignore */ }
+
+    const cleanup = () => {
+      try {
+        if (warm) {
+          scene.remove(warm);
+          for (const g of extraGroups) {
+            try { world.forgetItem && world.forgetItem(g); } catch { /* ignore */ }
+            warm.remove(g);
+          }
+          try { ch.dispose && ch.dispose(); } catch { /* ignore */ }
+        }
+      } catch { /* ignore */ }
+      warm = null;
+    };
+    const doCompile = () => {
+      try {
+        if (renderer.compile) renderer.compile(scene, camera);
+      } catch { /* ignore */ }
+      cleanup();
+    };
+    if (typeof renderer.compileAsync === 'function') {
+      renderer.compileAsync(scene, camera).then(cleanup, cleanup);
+    } else {
+      setTimeout(doCompile, 30);
+    }
+  } catch (e) {
+    errors.push('prewarm: ' + (e && e.message));
+    if (warm) scene.remove(warm);
+  }
+}
+
 // ---------- 初始化 HUD / 启动 ----------
 try { initHud(); } catch (e) { errors.push('initHud: ' + e.message); }
 syncSettingsFromHud();
@@ -987,6 +1120,9 @@ H.setMenuVisible && H.setMenuVisible(true);
 H.showMenu && H.showMenu();
 setConnStatus('未连接');
 loop();
+// 主菜单显示后预编译所有材质/特效着色器，避免"进入游戏第一帧"卡顿
+setTimeout(prewarmAssets, 600);
+setTimeout(() => { try { if (renderer.compile) renderer.compile(scene, camera); } catch { /* ignore */ } }, 1600);
 
 // ---------- 调试/自动化接口 ----------
 window.__game = {
@@ -1001,6 +1137,7 @@ window.__game = {
       x: +local.pos.x.toFixed(2), y: +local.pos.y.toFixed(2), z: +local.pos.z.toFixed(2),
       yaw: +local.yaw.toFixed(2), pitch: +local.pitch.toFixed(2),
       hp: local.hp, alive: local.alive, grounded: local.grounded,
+      shield: local.shield || 0,
       weapon: local.weapon, stance: local.stance, sprint: local.sprinting, sliding: local.sliding,
       stamina: +local.stamina.toFixed(1),
       mag: local.ammoOf().mag,
@@ -1030,6 +1167,8 @@ window.__game = {
   get fps() { return Math.round(fpsEma); },
   get errors() { return errors.slice(-20); },
   get hitmarkerPart() { return lastHitmarkerPart; },
+  get matchPhase() { return matchPhase; },
+  get matchCountdown() { return matchCountdown; },
   get scopeActive() { return local ? local.scopeActive : false; },
   get qualityLevel() { return qualityLevel; },
   get settings() { return settings; },

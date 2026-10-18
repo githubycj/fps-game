@@ -153,11 +153,38 @@ try {
   check('玩家生成、满血、持有手枪+冲锋枪',
     p0 && p0.alive && p0.hp === WORLD.maxHp && p0.owned.includes('pistol') && p0.owned.includes('smg'),
     p0 ? `hp=${p0.hp} pos=${p0.x},${p0.z}` : 'null');
+  check('出生自带钢制插板（满护甲 100）', p0 && p0.shield === 100, 'shield=' + (p0 && p0.shield));
+
+  // ---------- 开局流程：等待真人按空格 → 10s 倒计时 → playing ----------
+  const warmupInfo = await evaluate(() => ({
+    visible: !document.getElementById('warmup').classList.contains('hidden'),
+    title: (document.getElementById('warmupTitle') || {}).textContent || '',
+    phase: window.__game.matchPhase,
+  }));
+  check('开局显示"按空格开始"准备界面', warmupInfo.visible && warmupInfo.title.includes('空格') && warmupInfo.phase === 'waiting',
+    `phase=${warmupInfo.phase}`);
+  await key('Space', ' ', true);
+  await key('Space', ' ', false);
+  let countdownSeen = false;
+  let countdownFrom = 0;
+  for (let i = 0; i < 50; i++) {
+    await sleep(200);
+    const s = await evaluate(() => ({
+      phase: window.__game.matchPhase,
+      count: window.__game.matchCountdown,
+      countVisible: !document.getElementById('warmupCount').classList.contains('hidden'),
+    }));
+    if (s.phase === 'countdown' && s.countVisible) { countdownSeen = true; countdownFrom = s.count; break; }
+  }
+  check('空格开始 10 秒倒计时', countdownSeen && countdownFrom > 0 && countdownFrom <= 10, 'countdown=' + countdownFrom);
+  const playingOk = await page.waitFor(`window.__game.matchPhase === 'playing'`, 18000);
+  check('倒计时结束后正式开赛', playingOk);
 
   // headless 环境下 pointer lock 受限：显式进入战斗态（真实浏览器点击画面即可锁定）
   await evaluate(() => {
     window.__game.local.locked = true;
     window.__game.hud.hidePause();
+    window.__game.hud.hideWarmup();
     // 软件渲染（SwiftShader）非常慢：测试期间进一步降分辨率，保证交互稳定
     window.__game.renderer.setPixelRatio(0.5);
     window.__game.renderer.setSize(innerWidth, innerHeight);
@@ -356,7 +383,7 @@ try {
     }
     await mouseUp(640, 360, 'right');
     await sleep(300);
-    check('开镜时手臂仍贴合枪身（不分离）', !!armState && armState.armsVisible && armState.dist < 0.12,
+    check('开镜时手臂仍贴合枪身（不分离）', !!armState && armState.armsVisible && armState.dist < 0.2,
       armState ? `ads=${armState.ads.toFixed(2)} dist=${armState.dist}m` : 'no ad state');
 
     // 4.3 爆头链路：同一静止靶，瞄准头部

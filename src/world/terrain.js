@@ -125,52 +125,76 @@ export function createTerrain({ preset, anisotropy = 1 } = {}) {
   if (detailTex) disposables.push(detailTex);
   disposables.push(material);
 
-  // ================= 内圈：可玩区域高度场 =================
-  const n = segments + 1;
-  const positions = new Float32Array(n * n * 3);
-  const colors = new Float32Array(n * n * 3);
-  const uvs = new Float32Array(n * n * 2);
+  // ================= 内圈：可玩区域高度场（分块，类 Minecraft 区块裁剪）=================
+  // 把 140×140m 地形切成 4×4 块，每块独立 frustum culling，只渲染视锥内的区块。
+  // 法线用共享 terrainNormal() 直接写入，保证区块边界无缝。
+  const CHUNK = 4;
+  const chunkSeg = Math.ceil(segments / CHUNK);
   const rgb = [0, 0, 0];
-  for (let j = 0; j < n; j++) {
-    const z = -half + j * step;
-    for (let i = 0; i < n; i++) {
-      const x = -half + i * step;
-      const idx = (j * n + i) * 3;
-      positions[idx] = x;
-      positions[idx + 1] = heightAt(x, z);
-      positions[idx + 2] = z;
-      computeColor(x, z, rgb);
-      colors[idx] = rgb[0]; colors[idx + 1] = rgb[1]; colors[idx + 2] = rgb[2];
-      const uv = (j * n + i) * 2;
-      uvs[uv] = x / 3.1;
-      uvs[uv + 1] = z / 3.1;
+  const innerMeshes = [];
+  let innerTriangles = 0;
+  for (let cj = 0; cj < CHUNK; cj++) {
+    for (let ci = 0; ci < CHUNK; ci++) {
+      const i0 = ci * chunkSeg;
+      const j0 = cj * chunkSeg;
+      const i1 = Math.min(segments, i0 + chunkSeg);
+      const j1 = Math.min(segments, j0 + chunkSeg);
+      const w = i1 - i0, h = j1 - j0;
+      if (w <= 0 || h <= 0) continue;
+      const vn = (w + 1) * (h + 1);
+      const positions = new Float32Array(vn * 3);
+      const colors = new Float32Array(vn * 3);
+      const normals = new Float32Array(vn * 3);
+      const uvs = new Float32Array(vn * 2);
+      for (let jj = 0; jj <= h; jj++) {
+        const z = -half + (j0 + jj) * step;
+        for (let ii = 0; ii <= w; ii++) {
+          const x = -half + (i0 + ii) * step;
+          const k = jj * (w + 1) + ii;
+          const idx = k * 3;
+          positions[idx] = x;
+          positions[idx + 1] = heightAt(x, z);
+          positions[idx + 2] = z;
+          computeColor(x, z, rgb);
+          colors[idx] = rgb[0]; colors[idx + 1] = rgb[1]; colors[idx + 2] = rgb[2];
+          const nrm = terrainNormal(x, z);
+          normals[idx] = nrm.x; normals[idx + 1] = nrm.y; normals[idx + 2] = nrm.z;
+          const uv = k * 2;
+          uvs[uv] = x / 3.1;
+          uvs[uv + 1] = z / 3.1;
+        }
+      }
+      const index = new Uint32Array(w * h * 6);
+      let k = 0;
+      for (let jj = 0; jj < h; jj++) {
+        for (let ii = 0; ii < w; ii++) {
+          const a = jj * (w + 1) + ii;
+          const b = a + 1;
+          const c = a + (w + 1);
+          const d = c + 1;
+          index[k++] = a; index[k++] = c; index[k++] = b;
+          index[k++] = b; index[k++] = c; index[k++] = d;
+        }
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+      geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+      geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+      geo.setIndex(new THREE.BufferAttribute(index, 1));
+      geo.computeBoundingSphere();
+      geo.computeBoundingBox();
+      disposables.push(geo);
+      const mesh = new THREE.Mesh(geo, material);
+      mesh.name = 'terrainChunk_' + ci + '_' + cj;
+      mesh.receiveShadow = true;
+      mesh.castShadow = false;
+      mesh.matrixAutoUpdate = false;
+      mesh.updateMatrix();
+      innerMeshes.push(mesh);
+      innerTriangles += (w * h * 2);
     }
   }
-  const index = new Uint32Array(segments * segments * 6);
-  let k = 0;
-  for (let j = 0; j < segments; j++) {
-    for (let i = 0; i < segments; i++) {
-      const a = j * n + i, b = a + 1, c = a + n, d = c + 1;
-      index[k++] = a; index[k++] = c; index[k++] = b;
-      index[k++] = b; index[k++] = c; index[k++] = d;
-    }
-  }
-  const innerGeo = new THREE.BufferGeometry();
-  innerGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  innerGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  innerGeo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
-  innerGeo.setIndex(new THREE.BufferAttribute(index, 1));
-  innerGeo.computeVertexNormals();
-  innerGeo.computeBoundingSphere();
-  innerGeo.computeBoundingBox();
-  disposables.push(innerGeo);
-
-  const innerMesh = new THREE.Mesh(innerGeo, material);
-  innerMesh.name = 'terrainInner';
-  innerMesh.receiveShadow = true;
-  innerMesh.castShadow = false;
-  innerMesh.matrixAutoUpdate = false;
-  innerMesh.updateMatrix();
 
   // ================= 外圈：远景地形（不含可玩区）=================
   const layers = Math.max(3, Math.min(OUTER_DISTANCES.length, p.outerMilestones || 7));
@@ -229,21 +253,22 @@ export function createTerrain({ preset, anisotropy = 1 } = {}) {
 
   const group = new THREE.Group();
   group.name = 'terrain';
-  group.add(innerMesh, outerMesh);
+  group.add(...innerMeshes, outerMesh);
 
   function dispose() {
-    group.remove(innerMesh, outerMesh);
+    group.remove(...innerMeshes, outerMesh);
     if (group.parent) group.parent.remove(group);
     for (const d of disposables) if (d && d.dispose) d.dispose();
   }
 
   return {
     group,
-    innerMesh,
+    innerMeshes,
+    innerMesh: innerMeshes[0] || null,
     outerMesh,
-    raycastTargets: [innerMesh],
+    raycastTargets: innerMeshes,
     material,
-    triangleCount: () => (index.length + oIndex.length) / 3,
+    triangleCount: () => innerTriangles + oIndex.length / 3,
     dispose,
   };
 }

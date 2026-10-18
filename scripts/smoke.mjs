@@ -27,6 +27,10 @@ function check(name, cond, extra = '') {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const fakeWs = () => ({ readyState: 1, sent: [], send(m) { this.sent.push(JSON.parse(m)); } });
+// 单元测试直接进入"进行中"阶段（开局等待/倒计时由 E2E 覆盖）
+match.phase = 'playing';
+match.countdown = 0;
+match.timeLeft = 600;
 function clearPlayers() {
   for (const id of [...players.keys()]) players.delete(id);
 }
@@ -177,6 +181,8 @@ console.log('== 服务器：武器 / 弹药 / 切枪 ==');
   const ws = fakeWs();
   const p = createPlayer(ws, 'W1');
   const t = createPlayer(fakeWs(), 'W2');
+  // 关闭护甲，先测基础伤害（护甲单独测试）
+  p.shield = 0; t.shield = 0;
   p.x = 0; p.z = 7; p.y = heightAt(0, 7);
   t.x = 8; t.z = 7; t.y = heightAt(8, 7);
   t.input = { mx: 0, mz: 0, jump: false };
@@ -237,6 +243,7 @@ console.log('== 服务器：武器 / 弹药 / 切枪 ==');
   const kw = fakeWs();
   const killer = createPlayer(kw, 'K');
   const victim = createPlayer(fakeWs(), 'V');
+  killer.shield = 0; victim.shield = 0;
   killer.x = -10; killer.z = 7; killer.y = heightAt(-10, 7);
   victim.x = 0; victim.z = 7; victim.y = heightAt(0, 7);
   victim.hp = 20; victim.alive = true;
@@ -249,7 +256,7 @@ console.log('== 服务器：武器 / 弹药 / 切枪 ==');
   uav.alpha = 0;
   for (let i = 0; i < 8 && uav.alpha <= Date.now(); i++) {
     respawn(victim);
-    victim.alive = true; victim.hp = 20;
+    victim.alive = true; victim.hp = 20; victim.shield = 0;
     killer.x = -10; killer.z = 7; killer.y = heightAt(-10, 7);
     victim.x = 0; victim.z = 7; victim.y = heightAt(0, 7);
     killer.lastFire = 0;
@@ -259,6 +266,33 @@ console.log('== 服务器：武器 / 弹药 / 切枪 ==');
   check('5 连杀触发全队 UAV', killer.streak >= 5 && uav.alpha > Date.now(), `streak=${killer.streak}`);
   check('UAV 广播消息', kw.sent.some((m) => m.t === 'uav_start' && m.team === 'alpha'));
   players.delete(killer.id); players.delete(victim.id);
+}
+
+console.log('== 服务器：钢制插板护甲 ==');
+{
+  clearPlayers();
+  const aw = fakeWs();
+  const attacker = createPlayer(aw, 'A1');
+  const victim = createPlayer(fakeWs(), 'A2');
+  attacker.shield = 0;
+  attacker.x = -10; attacker.z = 7; attacker.y = heightAt(-10, 7);
+  victim.x = 0; victim.z = 7; victim.y = heightAt(0, 7);
+  victim.hp = 100; victim.shield = 100;
+  attacker.lastFire = 0; attacker.weapon = 'pistol'; ammoOf(attacker).mag = 15;
+  const hp0 = victim.hp, sh0 = victim.shield;
+  handleShoot(attacker, aimAt(attacker, victim, 'body'));
+  const hit = aw.sent.filter((m) => m.t === 'hit').pop();
+  check('出生自带钢制插板（满值 100）', sh0 === 100);
+  check('躯干伤害 80% 由插板吸收', victim.shield < sh0 - 10 && victim.hp < hp0 && victim.hp > hp0 - 15,
+    `hp=${victim.hp} armor=${victim.shield.toFixed(1)}`);
+  check('hit 消息含吸收量与剩余护甲', !!hit && hit.absorbed > 0 && Math.abs(hit.shield - victim.shield) < 0.01);
+  victim.hp = 100; victim.shield = 100;
+  attacker.lastFire = 0; ammoOf(attacker).mag = 15;
+  handleShoot(attacker, aimAt(attacker, victim, 'head'));
+  check('爆头无视插板（保留爆头价值）', victim.shield === 100 && victim.hp <= 45, `hp=${victim.hp} armor=${victim.shield}`);
+  respawn(victim);
+  check('重生后重新装备满护甲', victim.shield === 100);
+  players.delete(attacker.id); players.delete(victim.id);
 }
 
 console.log('== 服务器：道具 / 据点 / 比赛 ==');
@@ -408,13 +442,37 @@ try {
   const w1 = await c1.wait('welcome');
   check('join 收到 welcome', !!w1.id && w1.team === 'alpha' && w1.players.length === 1);
   check('welcome 含据点/比分/比赛信息', Array.isArray(w1.zones) && w1.zones.length === 3 && !!w1.match && !!w1.scores);
+  check('开局处于等待真人按空格阶段', w1.match && w1.match.phase === 'waiting');
+  const waitPhase = async (phase, timeout = 6000) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeout) {
+      const s = c1.latestState();
+      if (s && s.match && s.match.phase === phase) return true;
+      await sleep(80);
+    }
+    return false;
+  };
+  // 等待阶段不允许开火
+  c1.send({ t: 'shoot', yaw: 0, pitch: 0 });
+  await sleep(250);
+  check('等待阶段无法开火', !c1.queue.some((m) => m.t === 'hit'));
+  c1.send({ t: 'ready' });
+  check('按空格后进入 10 秒倒计时', await waitPhase('countdown'));
+  const cd = c1.latestState().match.countdown;
+  check('倒计时剩余时间合理', cd > 0 && cd <= 10, `countdown=${cd}`);
+  c1.send({ t: 'debug_start' });
+  check('倒计时结束后进入正式比赛', await waitPhase('playing'));
   await sleep(300);
   const st = c1.latestState();
   check('state 结构完整', st && Array.isArray(st.players) && Array.isArray(st.items) && Array.isArray(st.zones) &&
     !!st.scores && !!st.match && !!st.uav && Array.isArray(st.killfeed));
   check('state 快照含机动/瞄准字段', (() => {
     const me = st.players.find((p) => p.id === w1.id);
-    return me && 'stance' in me && 'sprint' in me && 'aiming' in me && 'stamina' in me && 'pitch' in me;
+    return me && 'stance' in me && 'sprint' in me && 'aiming' in me && 'stamina' in me && 'pitch' in me && 'shield' in me;
+  })());
+  check('真人出生自带满护甲', (() => {
+    const me = st.players.find((p) => p.id === w1.id);
+    return me && me.shield === 100;
   })());
 
   c1.send({ t: 'ping', time: 123 });
@@ -447,7 +505,8 @@ try {
   const a = c1.latestState().players.find((p) => p.name === 'Alpha');
   const b = c1.latestState().players.find((p) => p.name === 'Bravo');
   const dx = b.x - a.x, dz = b.z - a.z;
-  const dy = (b.y + (WORLD.bodyBottom + WORLD.bodyTop) / 2) - (a.y + WORLD.eyeHeight);
+  // 爆头无视钢制插板，用头部瞄准快速验证死亡广播
+  const dy = (b.y + WORLD.headY) - (a.y + WORLD.eyeHeight);
   const yaw = Math.atan2(-dx, -dz);
   const pitch = Math.asin(dy / Math.hypot(dx, dy, dz));
   let hitCount = 0;

@@ -136,7 +136,9 @@ const shotDamage = weaponsMod.shotDamage || ((w, { part = 'body', dist = 0 } = {
 
 // 服务器私有规则（shared 未定义的部分，集中在这里，便于 Lead/HUD 对齐）
 const RULES = {
-  shieldMax: 50,              // 护盾上限
+  shieldMax: 100,             // 钢制插板（护甲）上限：出生自带，只保护躯干
+  armorReduce: 0.8,           // 躯干伤害 80% 由插板吸收，20% 进入生命
+  matchCountdown: 10,         // 真人按空格后 10 秒倒计时
   speedBoostMs: 8000,         // 加速道具持续
   speedBoostMult: 1.5,        // 加速移速倍率
   pickupRadius: 1.7,          // 拾取半径
@@ -270,7 +272,9 @@ const zoneRuntime = ZONE_DEFS.map((z) => ({
 const scores = { alpha: 0, bravo: 0 };
 const match = {
   mode: 'domination',
-  phase: 'playing',     // 'playing' | 'ended'
+  // 'waiting'（等待真人按空格）→ 'countdown'（10s）→ 'playing' → 'ended'
+  phase: 'waiting',
+  countdown: 0,
   timeLeft: MATCH_TIME_LIMIT,
   target: MATCH_SCORE_TARGET,
   winner: null,
@@ -473,7 +477,7 @@ function createPlayer(ws, name) {
     yaw: yawForSpawn(spawn), pitch: 0,
     // 生命/状态
     hp: W.maxHp, maxHp: W.maxHp, alive: true, respawnAt: 0,
-    shield: 0, stamina: W.staminaMax, speedUntil: 0,
+    shield: RULES.shieldMax, stamina: W.staminaMax, speedUntil: 0,
     // 机动
     stance: 'stand', sprinting: false, sliding: false, aiming: false,
     prevCrouch: false, slideUntil: 0, slideCdUntil: 0, slideDirX: 0, slideDirZ: 0,
@@ -521,7 +525,7 @@ function respawn(p) {
   p.hp = p.maxHp ?? W.maxHp;
   p.alive = true;
   p.respawnAt = 0;
-  p.shield = 0;
+  p.shield = RULES.shieldMax;
   p.speedUntil = 0;
   p.stamina = W.staminaMax;
   p.stance = 'stand';
@@ -625,6 +629,7 @@ function stateMessage(now = Date.now()) {
     match: {
       mode: match.mode,
       phase: match.phase,
+      countdown: Math.max(0, Math.ceil(match.countdown)),
       timeLeft: Math.max(0, Math.ceil(match.timeLeft)),
       target: match.target,
       winner: match.winner,
@@ -647,7 +652,8 @@ function welcomeMessage(p) {
     items: [...items.values()].map(itemSnapshot),
     mode: match.mode,
     match: {
-      mode: match.mode, phase: match.phase, timeLeft: Math.max(0, Math.ceil(match.timeLeft)),
+      mode: match.mode, phase: match.phase, countdown: Math.max(0, Math.ceil(match.countdown)),
+      timeLeft: Math.max(0, Math.ceil(match.timeLeft)),
       target: match.target, winner: match.winner,
     },
     scores: { alpha: Math.round(scores.alpha * 10) / 10, bravo: Math.round(scores.bravo * 10) / 10 },
@@ -1011,6 +1017,8 @@ function triggerUav(p) {
 // 服务器权威开火：校验射速/弹药/切枪/换弹 → 散布 → 多弹丸 → 共享命中盒 + 世界遮挡 → 伤害
 function handleShoot(p, msg = {}) {
   if (!p || !p.alive) return false;
+  // 只有正式开赛后才能开火（等待/倒计时阶段禁止对枪）
+  if (match.phase !== 'playing') return false;
   const now = Date.now();
   if (now < (p.swapUntil || 0)) return false;                       // 切枪硬直
   if ((p.reloadUntil || 0) > 0) return false;                       // 换弹中
@@ -1118,17 +1126,22 @@ function handleShoot(p, msg = {}) {
   for (const rec of hits.values()) {
     const target = rec.target;
     if (!target.alive) continue;
+    const part = rec.head > 0 ? 'head' : (rec.legs > 0 && rec.body === 0 ? 'legs' : 'body');
     let dmg = rec.dmg;
     let absorbed = 0;
-    if ((target.shield || 0) > 0) {
-      absorbed = Math.min(target.shield, dmg);
-      target.shield -= absorbed;
-      dmg -= absorbed;
+    // 钢制插板：出生自带，只保护躯干。躯干伤害 80% 由插板吸收、20% 进入生命；
+    // 头部/腿部不享受护甲减免（保留爆头价值）。
+    if (part === 'body' && (target.shield || 0) > 0) {
+      const toPlate = dmg * RULES.armorReduce;
+      absorbed = Math.min(target.shield, toPlate);
+      target.shield = Math.max(0, target.shield - absorbed);
+      const overflow = toPlate - absorbed;   // 插板被打穿后的溢出部分
+      dmg = dmg * (1 - RULES.armorReduce) + overflow;
     }
+    dmg = Math.max(0, Math.round(dmg));
     if (dmg > 0) target.hp = Math.max(0, target.hp - dmg);
     target.lastDamageAt = nowAfter;
     const killed = target.hp <= 0;
-    const part = rec.head > 0 ? 'head' : (rec.legs > 0 && rec.body === 0 ? 'legs' : 'body');
     const point = rec.point || { x: ox, y: oy, z: oz };
     const hitMsg = {
       t: 'hit',
@@ -1136,7 +1149,8 @@ function handleShoot(p, msg = {}) {
       shooterName: p.name,
       targetId: target.id,
       targetName: target.name,
-      dmg: rec.dmg,
+      dmg,
+      rawDmg: rec.dmg,
       part,
       headshot: part === 'head',
       killed,
@@ -1147,7 +1161,7 @@ function handleShoot(p, msg = {}) {
       targetHp: target.hp,
       hp: target.hp,
       shield: target.shield || 0,
-      absorbed,
+      absorbed: Math.round(absorbed),
       team: p.team,
     };
     send(p.ws, hitMsg);
@@ -1409,6 +1423,7 @@ function matchSummary() {
   return {
     mode: match.mode,
     phase: match.phase,
+    countdown: Math.max(0, Math.ceil(match.countdown)),
     timeLeft: Math.max(0, Math.ceil(match.timeLeft)),
     target: match.target,
     winner: match.winner,
@@ -1435,7 +1450,8 @@ function endMatch(winner, reason) {
   if (isMain) console.log('[match] 结束：' + (winner || '平局') + '（' + reason + '）');
 }
 function resetMatch() {
-  match.phase = 'playing';
+  match.phase = 'waiting';
+  match.countdown = 0;
   match.timeLeft = MATCH_TIME_LIMIT;
   match.winner = null;
   match.endedAt = 0;
@@ -1452,9 +1468,46 @@ function resetMatch() {
     z.counts.alpha = 0;
     z.counts.bravo = 0;
   }
-  if (isMain) console.log('[match] 第 ' + match.round + ' 局开始');
+  if (isMain) console.log('[match] 第 ' + match.round + ' 局准备：等待真人按空格开始');
 }
+
+// 真人按空格 → 进入 10 秒倒计时
+function requestMatchStart() {
+  if (match.phase !== 'waiting') return false;
+  if (humanCount() <= 0) return false;
+  match.phase = 'countdown';
+  match.countdown = RULES.matchCountdown;
+  broadcast({ t: 'match_countdown', seconds: RULES.matchCountdown, round: match.round });
+  if (isMain) console.log('[match] 玩家开始准备，倒计时 ' + RULES.matchCountdown + 's');
+  return true;
+}
+
+// 调试/测试用：跳过等待与倒计时直接开赛
+function forceMatchStart() {
+  match.phase = 'playing';
+  match.countdown = 0;
+  match.timeLeft = MATCH_TIME_LIMIT;
+  match.winner = null;
+  match.endedAt = 0;
+  return true;
+}
+
 function updateMatch(dt, now) {
+  if (match.phase === 'waiting') {
+    // 等待真人按空格，计时/比分/据点全部冻结
+    return;
+  }
+  if (match.phase === 'countdown') {
+    match.countdown = Math.max(0, match.countdown - dt);
+    if (match.countdown <= 0) {
+      match.phase = 'playing';
+      match.countdown = 0;
+      match.timeLeft = MATCH_TIME_LIMIT;
+      broadcast({ t: 'match_start', round: match.round });
+      if (isMain) console.log('[match] 第 ' + match.round + ' 局正式开始');
+    }
+    return;
+  }
   if (match.phase === 'ended') {
     if (now - (match.endedAt || 0) >= RULES.matchResetDelay * 1000) resetMatch();
     return;
@@ -1527,7 +1580,7 @@ function createBot(teamArg) {
     hp: (W.maxHp ?? 100) * (AI_CONFIG.healthMult ?? 1),
     maxHp: (W.maxHp ?? 100) * (AI_CONFIG.healthMult ?? 1),
     alive: true, respawnAt: 0,
-    shield: 0, stamina: W.staminaMax, speedUntil: 0,
+    shield: RULES.shieldMax, stamina: W.staminaMax, speedUntil: 0,
     stance: 'stand', sprinting: false, sliding: false, aiming: false,
     prevCrouch: false, slideUntil: 0, slideCdUntil: 0, slideDirX: 0, slideDirZ: 0,
     speedNow: 0,
@@ -1733,6 +1786,17 @@ function runAiTick(now = Date.now()) {
 // ============================================================
 
 function tick(now = Date.now(), dt = TICK_MS / 1000) {
+  // 等待/倒计时阶段冻结 AI，避免开局前互相对枪
+  if (match.phase !== 'playing') {
+    for (const p of players.values()) {
+      if (!p.bot) continue;
+      p.input = emptyInput();
+      p.sprinting = false;
+      p.sliding = false;
+      p.aiming = false;
+      p.stance = 'stand';
+    }
+  }
   for (const p of players.values()) updatePlayer(p, dt);
   separatePlayers();
   updateZones(dt);
@@ -1897,6 +1961,15 @@ function handleDebug(msg) {
       match.timeLeft = Math.max(0, Number(msg.timeLeft ?? msg.value) || 0);
       break;
     }
+    // 跳过等待/倒计时，直接开赛（仅测试）
+    case 'debug_start': {
+      forceMatchStart();
+      break;
+    }
+    case 'debug_ready': {
+      requestMatchStart();
+      break;
+    }
     default: break;
   }
 }
@@ -1932,6 +2005,11 @@ wss.on('connection', (ws) => {
         broadcastExcept(ws, { t: 'player_joined', player: snapshot(player) });
         send(ws, stateMessage());
         if (isMain) console.log('[+] ' + player.name + ' (' + player.id + ') 加入 alpha 队，当前真人 ' + humanCount());
+        break;
+      }
+      case 'ready': {
+        // 真人玩家按下空格：等待阶段 → 10 秒倒计时
+        requestMatchStart();
         break;
       }
       case 'input': {
@@ -2065,6 +2143,8 @@ export {
   tick,
   stepOnce,
   stateMessage,
+  requestMatchStart,
+  forceMatchStart,
   zoneRuntime as zones,
   scores,
   match,

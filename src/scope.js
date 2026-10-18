@@ -22,9 +22,14 @@ const HIP_ROT = {
   sniper: [0.02, -0.04, 0.008],
 };
 
-// 开镜时眼睛到瞄具的距离（相机局部 z 绝对值）
-// 需要留出足够的余量，否则枪托/机匣会穿过近裁剪面变成黑色大块。
-const ADS_EYE_RELIEF = 0.75;
+// 开镜时眼睛到瞄具的距离（按枪型分别设置：机瞄要贴近照门才真实，红点/手枪稍远）
+const ADS_CONFIG = {
+  pistol: { relief: 0.27, scale: 0.90 },
+  smg: { relief: 0.25, scale: 0.90 },
+  ak47: { relief: 0.23, scale: 0.95 },
+  shotgun: { relief: 0.26, scale: 0.90 },
+  sniper: { relief: 0.24, scale: 0.90 },
+};
 
 // 第一人称手臂尺寸（相机局部，米）
 const ARM = {
@@ -87,7 +92,7 @@ export class ScopeController {
     group.name = 'fpArms';
     const sleeveMat = makeArmMaterial(0x6a7052, { dithering: true });
     const cuffMat = makeArmMaterial(0x4b4f3a, { dithering: true });
-    const gloveMat = makeArmMaterial(0x6f6350, { dithering: true });
+    const gloveMat = makeArmMaterial(0x4b4d3f, { dithering: true });
     const sleeve = (radius) => makeBoneMesh(sleeveMat, radius);
     const cuff = (radius) => makeBoneMesh(cuffMat, radius);
 
@@ -95,8 +100,8 @@ export class ScopeController {
       const upper = sleeve(0.032);
       const fore = sleeve(0.026);
       const cuffMesh = cuff(0.029);
-      const handGeo = new THREE.BoxGeometry(0.044, 0.05, 0.075);
-      handGeo.translate(0, 0.024, 0);
+      const handGeo = new THREE.BoxGeometry(0.034, 0.042, 0.062);
+      handGeo.translate(0, 0.020, 0);
       const hand = new THREE.Mesh(handGeo, gloveMat);
       group.add(upper, fore, cuffMesh, hand);
       return { upper, fore, cuff: cuffMesh, hand };
@@ -137,10 +142,17 @@ export class ScopeController {
     // 袖口：靠近腕部的一小段
     const cuffFrom = _v4.clone().lerp(wrist, 0.72);
     orientBone(arm.cuff, cuffFrom, wrist);
-    arm.hand.position.copy(wrist);
+    // 手掌不要和枪身重叠：向外侧 + 向下偏移，开镜时偏移更大（避免挡住照门/红点）
+    const ads = this.adsVisual || 0;
+    const side = arm === this._arms.right ? 1 : -1;
+    arm.hand.position.set(
+      wrist.x + side * (0.022 + ads * 0.018),
+      wrist.y - (0.024 + ads * 0.016),
+      wrist.z + 0.004 + ads * 0.004,
+    );
     arm.hand.quaternion.copy(gunQuat);
-    // 掌心略向枪身内侧
-    arm.hand.rotateX(-0.15);
+    arm.hand.rotateZ(side * 0.22);
+    arm.hand.rotateX(-0.18);
   }
 
   _updateArms(gun) {
@@ -192,17 +204,18 @@ export class ScopeController {
     const ads = p.adsAmount;
     this.adsVisual = ads;
     this.scopeActive = !!p.scopeActive;
-    // 开镜时把视图模型缩小（真实游戏常见做法），避免枪托/机匣贴脸占满屏幕
+    const cfg = ADS_CONFIG[kind] || ADS_CONFIG.pistol;
+    // 开镜只做轻微缩放（保持真实瞄具尺寸），主要靠相机贴近照门/红点实现瞄准
     if (gun.userData._baseScale == null) gun.userData._baseScale = gun.scale.x;
-    const scale = gun.userData._baseScale * (1 - ads * 0.45);
+    const scale = gun.userData._baseScale * (1 - ads * (1 - cfg.scale));
     gun.scale.setScalar(scale);
 
-    // ---- 开镜位置：让 sightPoint 落在相机局部 (0,0,-d) ----
+    // ---- 开镜位置：让 sightPoint 落在相机局部 (0,0,-relief) ----
     const sp = gun.userData.sightPoint || this._tmp.set(0, 0.05, -0.2);
     this._adsPos.set(
       -sp.x * scale,
       -sp.y * scale,
-      -ADS_EYE_RELIEF - sp.z * scale,
+      -cfg.relief - sp.z * scale,
     );
 
     const hip = HIP_POS[kind] || HIP_POS.pistol;

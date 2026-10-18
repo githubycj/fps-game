@@ -331,33 +331,56 @@ export function createVegetation({ preset } = {}) {
   shuffle(grassPlacements, rand);
   if (grassPlacements.length > GRASS_CAP) grassPlacements.length = GRASS_CAP;
 
-  const grassMesh = new THREE.InstancedMesh(bladeGeo, bladeMat, grassPlacements.length);
-  grassMesh.name = 'grassField';
-  grassMesh.frustumCulled = false;
-  {
+  // ---------- 分块 InstancedMesh：只渲染视锥内的草地分块（类 Minecraft 区块裁剪） ----------
+  const VEG_CHUNKS = 4;
+  function buildChunkedField(geo, mat, placements, name, fill, opts = {}) {
+    const buckets = new Map();
+    for (const pl of placements) {
+      const ci = Math.max(0, Math.min(VEG_CHUNKS - 1, Math.floor((pl.x + WORLD.half) / WORLD.size * VEG_CHUNKS)));
+      const cj = Math.max(0, Math.min(VEG_CHUNKS - 1, Math.floor((pl.z + WORLD.half) / WORLD.size * VEG_CHUNKS)));
+      const key = cj * VEG_CHUNKS + ci;
+      let list = buckets.get(key);
+      if (!list) { list = []; buckets.set(key, list); }
+      list.push(pl);
+    }
+    const meshes = [];
+    const baseCounts = [];
+    for (const list of buckets.values()) {
+      const mesh = new THREE.InstancedMesh(geo, mat, list.length);
+      mesh.name = name;
+      mesh.frustumCulled = true;
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      fill(mesh, list);
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      if (typeof mesh.computeBoundingSphere === 'function') mesh.computeBoundingSphere();
+      group.add(mesh);
+      disposables.push(mesh);
+      meshes.push(mesh);
+      baseCounts.push(list.length);
+    }
+    return { meshes, baseCounts };
+  }
+  const grassField = buildChunkedField(bladeGeo, bladeMat, grassPlacements, 'grassField', (mesh, list) => {
     const m = new THREE.Matrix4();
     const q = new THREE.Quaternion();
     const e = new THREE.Euler();
     const pos = new THREE.Vector3();
     const scl = new THREE.Vector3();
-    for (let i = 0; i < grassPlacements.length; i++) {
-      const g = grassPlacements[i];
+    for (let i = 0; i < list.length; i++) {
+      const g = list[i];
       pos.set(g.x, g.y - 0.02, g.z);
       e.set(g.tilt * 0.6, g.yaw, g.tilt);
       q.setFromEuler(e);
       scl.set(0.85 + g.tone * 0.5, g.scale, 1);
       m.compose(pos, q, scl);
-      grassMesh.setMatrixAt(i, m);
-      // 绿黄之间：越干越黄（用 sRGB 十六进制插值，保证和地形态色调一致）
+      mesh.setMatrixAt(i, m);
       const dry = clamp(0.18 + g.tone * 0.5 + valueNoise(g.x * 0.07, g.z * 0.07) * 0.35, 0, 1);
       _grassCol.copy(GRASS_A).lerp(GRASS_B, dry);
-      grassMesh.setColorAt(i, _grassCol);
+      mesh.setColorAt(i, _grassCol);
     }
-    grassMesh.instanceMatrix.needsUpdate = true;
-    if (grassMesh.instanceColor) grassMesh.instanceColor.needsUpdate = true;
-  }
-  group.add(grassMesh);
-  disposables.push(grassMesh);
+  });
 
   // ================= 高杂草 =================
   const WEED_H = 0.85;
@@ -391,29 +414,22 @@ export function createVegetation({ preset } = {}) {
     }
   }
   shuffle(weedPlacements, rand);
-  const weedMesh = new THREE.InstancedMesh(weedGeo, weedMat, weedPlacements.length);
-  weedMesh.name = 'weedField';
-  weedMesh.frustumCulled = false;
-  {
+  const weedField = buildChunkedField(weedGeo, weedMat, weedPlacements, 'weedField', (mesh, list) => {
     const m = new THREE.Matrix4(); const q = new THREE.Quaternion();
     const e = new THREE.Euler(); const pos = new THREE.Vector3(); const scl = new THREE.Vector3();
-    for (let i = 0; i < weedPlacements.length; i++) {
-      const g = weedPlacements[i];
+    for (let i = 0; i < list.length; i++) {
+      const g = list[i];
       pos.set(g.x, g.y - 0.03, g.z);
       e.set((rand() - 0.5) * 0.3, g.yaw, (rand() - 0.5) * 0.3);
       q.setFromEuler(e);
       scl.set(1, g.scale, 1);
       m.compose(pos, q, scl);
-      weedMesh.setMatrixAt(i, m);
+      mesh.setMatrixAt(i, m);
       const dry = clamp(0.3 + g.tone * 0.6, 0, 1);
       _weedCol.copy(WEED_A).lerp(WEED_B, dry);
-      weedMesh.setColorAt(i, _weedCol);
+      mesh.setColorAt(i, _weedCol);
     }
-    weedMesh.instanceMatrix.needsUpdate = true;
-    if (weedMesh.instanceColor) weedMesh.instanceColor.needsUpdate = true;
-  }
-  group.add(weedMesh);
-  disposables.push(weedMesh);
+  });
 
   // ================= 野花 =================
   const flowerGeo = makeFlowerGeometry(0.4);
@@ -444,28 +460,21 @@ export function createVegetation({ preset } = {}) {
     }
   }
   shuffle(flowerPlacements, rand);
-  const flowerMesh = new THREE.InstancedMesh(flowerGeo, flowerMat, flowerPlacements.length);
-  flowerMesh.name = 'flowerField';
-  flowerMesh.frustumCulled = false;
-  {
+  const flowerField = buildChunkedField(flowerGeo, flowerMat, flowerPlacements, 'flowerField', (mesh, list) => {
     const m = new THREE.Matrix4(); const q = new THREE.Quaternion();
     const e = new THREE.Euler(); const pos = new THREE.Vector3(); const scl = new THREE.Vector3();
     const col = new THREE.Color();
-    for (let i = 0; i < flowerPlacements.length; i++) {
-      const g = flowerPlacements[i];
+    for (let i = 0; i < list.length; i++) {
+      const g = list[i];
       pos.set(g.x, g.y, g.z);
       e.set(0, g.yaw, 0); q.setFromEuler(e);
       scl.set(1, g.scale, 1);
       m.compose(pos, q, scl);
-      flowerMesh.setMatrixAt(i, m);
+      mesh.setMatrixAt(i, m);
       col.set(g.color);
-      flowerMesh.setColorAt(i, col);
+      mesh.setColorAt(i, col);
     }
-    flowerMesh.instanceMatrix.needsUpdate = true;
-    if (flowerMesh.instanceColor) flowerMesh.instanceColor.needsUpdate = true;
-  }
-  group.add(flowerMesh);
-  disposables.push(flowerMesh);
+  });
 
   // ================= 树 =================
   const pineList = TREES.filter((t) => t.type === 'pine');
@@ -656,9 +665,15 @@ export function createVegetation({ preset } = {}) {
     const np = next || {};
     wind.uFadeStart.value = (np.grassFade && np.grassFade[0]) || 34;
     wind.uFadeEnd.value = (np.grassFade && np.grassFade[1]) || 56;
-    grassMesh.count = Math.max(0, Math.floor(grassPlacements.length * (np.grassDensity != null ? np.grassDensity : 1)));
-    weedMesh.count = Math.max(0, Math.floor(weedPlacements.length * (np.weedDensity != null ? np.weedDensity : 1)));
-    flowerMesh.count = Math.max(0, Math.floor(flowerPlacements.length * (np.flowerDensity != null ? np.flowerDensity : 1)));
+    const applyDensity = (field, density) => {
+      const d = density != null ? density : 1;
+      for (let i = 0; i < field.meshes.length; i++) {
+        field.meshes[i].count = Math.max(0, Math.floor(field.baseCounts[i] * d));
+      }
+    };
+    applyDensity(grassField, np.grassDensity);
+    applyDensity(weedField, np.weedDensity);
+    applyDensity(flowerField, np.flowerDensity);
     for (const tm of treeMeshes) tm.castShadow = !!np.treeShadows;
     if (bushMeshRef && bushList.length) {
       bushMeshRef.count = Math.max(1, Math.floor(bushList.length * (np.bushes != null ? np.bushes : 1)));
@@ -673,6 +688,13 @@ export function createVegetation({ preset } = {}) {
   // 首帧按当前档位设置数量
   setQuality(p);
 
-  return { group, wind, counts, update, setQuality, dispose, grassMesh, weedMesh, flowerMesh, treeMeshes };
+  return {
+    group, wind, counts, update, setQuality, dispose,
+    grassField, weedField, flowerField, treeMeshes,
+    // 兼容旧字段
+    grassMesh: grassField.meshes[0] || null,
+    weedMesh: weedField.meshes[0] || null,
+    flowerMesh: flowerField.meshes[0] || null,
+  };
 }
 

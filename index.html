@@ -131,9 +131,9 @@
     <!-- 左下：生命体征 -->
     <div id="vitals">
       <div id="shieldWrap" class="hidden">
-        <span class="vital-label">护盾</span>
+        <span class="vital-label">护甲</span>
         <div class="hp-bar shield"><div id="shieldFill"></div></div>
-        <span id="shieldNum" class="mono">0</span>
+        <span id="shieldNum" class="mono">100</span>
       </div>
       <div id="hpWrap">
         <span class="vital-label">生命</span>
@@ -223,6 +223,17 @@
           </g>
         </svg>
         <div id="scopeZoom" class="scope-zoom mono">6×</div>
+      </div>
+    </div>
+
+    <!-- 开局准备 / 倒计时 -->
+    <div id="warmup" class="overlay hidden">
+      <div class="card small warmup-card">
+        <div class="card-kicker">TACTICAL READY</div>
+        <div id="warmupTitle">按 空格 开始战斗</div>
+        <div id="warmupSub">点击画面锁定鼠标 · 按空格开始 10 秒倒计时</div>
+        <div id="warmupCount" class="mono hidden">10</div>
+        <div class="card-sub">钢制插板已装备 · 躯干伤害 -80%</div>
       </div>
     </div>
 
