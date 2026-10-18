@@ -17,7 +17,9 @@ const childEnv = {
 };
 
 const server = spawn(process.execPath, ['server/server.js'], { cwd: root, stdio: 'inherit', env: childEnv });
-const viteArgs = [viteBin, '--cacheDir', path.join(root, '.vite-cache')];
+// 注意：Vite 6 的 CLI 没有 --cacheDir 参数（会报 CACError: Unknown option），
+// 缓存目录通过 vite.config.js 的 cacheDir 配置（已设为项目内 .vite-cache）。
+const viteArgs = [viteBin];
 if (process.env.VITE_PORT) viteArgs.push('--port', process.env.VITE_PORT, '--strictPort');
 const vite = spawn(process.execPath, viteArgs, { cwd: root, stdio: 'inherit', env: childEnv });
 
