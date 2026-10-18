@@ -124,6 +124,7 @@ const state = {
   ads: false, sightType: 'iron', scopeActive: false, zoomLabel: '6×',
   crosshairHidden: false, crosshairSize: 22,
   hitmarkerPart: null, hitmarkerKilled: false,
+  lastDamageAngle: null,
   scores: { alpha: 0, bravo: 0 }, timer: 0, timeLimit: 0,
   zones: [], uav: { active: false, sec: 0 },
   kills: 0, deaths: 0, ping: 0, streak: 0,
@@ -870,9 +871,56 @@ export const hud = {
     }, 640);
   },
   showDamageFrom(angleRad) {
+    const angle = num(angleRad, 0);
+    // 优先：SVG 正态分布曲线扇形（指向明确，越靠前越红）
+    const layer = node('dmgLayer');
+    if (layer && typeof document.createElementNS === 'function') {
+      try {
+        const NS = 'http://www.w3.org/2000/svg';
+        const g = document.createElementNS(NS, 'g');
+        g.setAttribute('transform', 'rotate(' + (angle * 180 / Math.PI).toFixed(2) + ')');
+        // 正态分布曲线（高斯钟形）扇形：尖端指向伤害来源，横向越靠中间越红
+        const sigma = 0.26;
+        const R0 = 64;      // 内半径（离准星的距离）
+        const LEN = 52;     // 尖端长度
+        const HALF = 40;    // 底边半宽
+        const N = 30;
+        let d = '';
+        for (let i = 0; i <= N; i++) {
+          const t = i / N;
+          const x = (t - 0.5) * 2;                              // -1..1
+          const y = Math.exp(-(x * x) / (2 * sigma * sigma));    // 0..1
+          d += (i === 0 ? 'M' : 'L') + (x * HALF).toFixed(2) + ' ' + (-(R0 + y * LEN)).toFixed(2);
+        }
+        d += 'L' + HALF.toFixed(2) + ' ' + (-R0).toFixed(2);
+        d += 'L' + (-HALF).toFixed(2) + ' ' + (-R0).toFixed(2) + 'Z';
+        const path = document.createElementNS(NS, 'path');
+        path.setAttribute('d', d);
+        path.setAttribute('fill', 'url(#dmgCurveGrad)');
+        path.setAttribute('stroke', 'rgba(255,120,96,0.85)');
+        path.setAttribute('stroke-width', '1.2');
+        path.setAttribute('class', 'dmg-curve');
+        g.appendChild(path);
+        // 尖端发光点：明确指向来源
+        const tip = document.createElementNS(NS, 'circle');
+        tip.setAttribute('cx', '0');
+        tip.setAttribute('cy', String(-(R0 + LEN + 3)));
+        tip.setAttribute('r', '8');
+        tip.setAttribute('fill', 'url(#dmgGlowGrad)');
+        tip.setAttribute('class', 'dmg-tip');
+        g.appendChild(tip);
+        layer.appendChild(g);
+        while (layer.childElementCount > 6) layer.removeChild(layer.firstChild);
+        setTimeout(() => {
+          g.classList.add('fade');
+          setTimeout(() => g.remove(), 340);
+        }, 900);
+        state.lastDamageAngle = angle;
+        return;
+      } catch { /* 回退到 DOM 环 */ }
+    }
     const root = node('dmgIndicators');
     if (!root) return;
-    const angle = num(angleRad, 0);
     const div = document.createElement('div');
     div.className = 'dmg-ind';
     div.style.transform = 'translate(-50%, -50%) rotate(' + angle.toFixed(4) + 'rad)';

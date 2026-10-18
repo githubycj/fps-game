@@ -10,6 +10,29 @@ function makeCanvas(w, h) {
   return c;
 }
 
+// ===== 贴图分帧上传（避免一次性大量 GPU 上传造成卡顿）=====
+// 所有程序化贴图创建时先挂起，由 World 在主菜单阶段按 1~2 张/帧逐步上传到 GPU。
+const PENDING_UPLOADS = [];
+export function registerDeferredUpload(tex) {
+  if (!tex) return tex;
+  tex.needsUpdate = false;
+  PENDING_UPLOADS.push(tex);
+  return tex;
+}
+export function pendingUploadCount() {
+  return PENDING_UPLOADS.length;
+}
+// 上传接下来 n 张待上传贴图，返回剩余数量
+export function uploadTexturesStep(n = 2) {
+  let count = 0;
+  while (PENDING_UPLOADS.length > 0 && count < n) {
+    const tex = PENDING_UPLOADS.shift();
+    try { tex.needsUpdate = true; } catch { /* ignore */ }
+    count += 1;
+  }
+  return PENDING_UPLOADS.length;
+}
+
 function toTexture(canvas, { srgb = true, repeat = true, anisotropy = 1 } = {}) {
   if (!canvas) return null;
   const tex = new THREE.CanvasTexture(canvas);
@@ -19,8 +42,8 @@ function toTexture(canvas, { srgb = true, repeat = true, anisotropy = 1 } = {}) 
     tex.wrapT = THREE.RepeatWrapping;
   }
   tex.anisotropy = Math.max(1, anisotropy | 0);
-  tex.needsUpdate = true;
-  return tex;
+  // 分帧上传：先不标记 needsUpdate，交给 uploadTexturesStep 逐步上传
+  return registerDeferredUpload(tex);
 }
 
 // 周期噪声（整数频率正弦叠加）：保证贴图四边无缝平铺

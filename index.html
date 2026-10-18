@@ -173,6 +173,21 @@
     <div id="hitmarker"></div>
     <div id="hitmarker-head"></div>
     <div id="dmgIndicators"></div>
+    <!-- 受击方向扇形：指向伤害来源（正态分布曲线形状，尖锐有指向性） -->
+    <svg class="dmg-svg-layer" viewBox="-100 -100 200 200" aria-hidden="true">
+      <defs>
+        <linearGradient id="dmgCurveGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#ff5a43" stop-opacity="0.95" />
+          <stop offset="60%" stop-color="#d4342a" stop-opacity="0.55" />
+          <stop offset="100%" stop-color="#d4342a" stop-opacity="0" />
+        </linearGradient>
+        <radialGradient id="dmgGlowGrad">
+          <stop offset="0%" stop-color="#ff6a52" stop-opacity="0.9" />
+          <stop offset="100%" stop-color="#ff6a52" stop-opacity="0" />
+        </radialGradient>
+      </defs>
+      <g id="dmgLayer"></g>
+    </svg>
     <div id="flash" class="hidden"></div>
 
     <!-- 狙击开镜遮罩：圆形透明中心 + 黑色外圈 + 分划 + 暗角 + 轻微色差 -->

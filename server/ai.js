@@ -54,19 +54,19 @@ const AI_DEFAULTS = {
   repathMs: 2000,            // 路径最多 2s 重算
   stuckMs: 800,              // 位移 <0.1m 持续 0.8s 判卡住
   stuckMinMove: 0.1,
-  turnRate: 3.4,             // rad/s，人不能瞬间转身
+  turnRate: 3.0,             // rad/s，人不能瞬间转身
   sprintDist: 14,            // 超过该距离且无敌人时冲刺
   // 战斗
-  reactionMin: 180, reactionMax: 420,   // 发现→可开火的反应时间
-  aimErrorStart: 0.16,       // 初始瞄准误差（rad，约 9°）
-  aimErrorMin: 0.012,        // 持续追踪收敛后的误差下限
-  aimSettle: 1.2,            // 收敛时间（秒）
-  aimHeadChance: 0.14,       // 瞄头概率（不高，避免 AI 枪枪爆头）
+  reactionMin: 340, reactionMax: 720,   // 发现→可开火的反应时间（更接近普通玩家）
+  aimErrorStart: 0.30,       // 初始瞄准误差（rad，约 17°）
+  aimErrorMin: 0.045,        // 持续追踪收敛后的误差下限（≈2.6°，中远距离不再百发百中）
+  aimSettle: 1.8,            // 收敛时间（秒）
+  aimHeadChance: 0.10,       // 瞄头概率（不高，避免 AI 枪枪爆头）
   turnAimRate: 2.6,
   shootRange: 55,
   burstMin: 3, burstMax: 6,
-  burstPauseMin: 160, burstPauseMax: 400,
-  fireRateMultiplier: 0.85,  // <1 = 射速比武器上限慢
+  burstPauseMin: 260, burstPauseMax: 620,
+  fireRateMultiplier: 0.7,   // <1 = 射速比武器上限慢
   retreatHpFrac: 0.32,       // 低血撤退
   coverHpFrac: 0.55,         // 半血以下优先掩体
   coverCheckMs: 4500,

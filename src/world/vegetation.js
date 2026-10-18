@@ -286,6 +286,9 @@ export function createVegetation({ preset } = {}) {
   const wind = makeWindUniforms();
   const blocked = makeBlocker();
   const rand = rng(20261018);
+  // 远处 LOD 流式：草/杂草/野花分块按距离整块隐藏（声明提前，供 setQuality 使用）
+  let lodEnd = 70;
+  const lodMeshes = [];
 
   const grassDensity = p.grassDensity != null ? p.grassDensity : 1;
   const weedDensity = p.weedDensity != null ? p.weedDensity : 1;
@@ -657,6 +660,7 @@ export function createVegetation({ preset } = {}) {
     const t = wind.uTime.value;
     wind.uGust.value = 0.72 + 0.24 * Math.sin(t * 0.23) + 0.12 * Math.sin(t * 0.61 + 1.3);
     if (playerPos) wind.uPlayer.value.set(playerPos.x, playerPos.y || 0, playerPos.z);
+    updateLOD(dt, playerPos);
   }
 
   const bushMeshRef = treeMeshes.find((m) => m.name === 'bushes') || null;
@@ -669,14 +673,50 @@ export function createVegetation({ preset } = {}) {
       const d = density != null ? density : 1;
       for (let i = 0; i < field.meshes.length; i++) {
         field.meshes[i].count = Math.max(0, Math.floor(field.baseCounts[i] * d));
+        field.meshes[i].userData.baseCount = field.meshes[i].count;
+        field.meshes[i].userData.fullCount = field.meshes[i].count;
       }
     };
     applyDensity(grassField, np.grassDensity);
     applyDensity(weedField, np.weedDensity);
     applyDensity(flowerField, np.flowerDensity);
+    // 远处 LOD 流式：淡出距离之外直接整块关闭
+    lodEnd = ((np.grassFade && np.grassFade[1]) || 56) + 14;
+    for (const m of lodMeshes) m.userData.baseCount = m.count;
     for (const tm of treeMeshes) tm.castShadow = !!np.treeShadows;
     if (bushMeshRef && bushList.length) {
       bushMeshRef.count = Math.max(1, Math.floor(bushList.length * (np.bushes != null ? np.bushes : 1)));
+    }
+  }
+
+  // ================= 远处 LOD 流式加载 =================
+  // 每帧按玩家位置把分块分成三档：近（完整）/ 中（一半实例）/ 远（整块隐藏），
+  // 只有档位变化时才改 count，避免每帧写 buffer。
+  for (const f of [grassField, weedField, flowerField]) for (const m of f.meshes) lodMeshes.push(m);
+  const lodCenters = lodMeshes.map((m) => {
+    const c = m.boundingSphere ? m.boundingSphere.center.clone() : new THREE.Vector3();
+    const b = m.geometry && m.geometry.boundingBox ? m.geometry.boundingBox : null;
+    if (b) c.set((b.min.x + b.max.x) / 2, (b.min.y + b.max.y) / 2, (b.min.z + b.max.z) / 2);
+    return c;
+  });
+  let lodTimer = 0;
+  function updateLOD(dt, playerPos) {
+    if (!playerPos) return;
+    lodTimer += dt;
+    if (lodTimer < 0.25) return;   // 4Hz 足够
+    lodTimer = 0;
+    const px = playerPos.x, pz = playerPos.z;
+    for (let i = 0; i < lodMeshes.length; i++) {
+      const m = lodMeshes[i];
+      const base = m.userData.baseCount != null ? m.userData.baseCount : m.count;
+      m.userData.baseCount = base;
+      const c = lodCenters[i];
+      const d = Math.hypot(c.x - px, c.z - pz);
+      let target;
+      if (d > lodEnd) target = 0;
+      else if (d > lodEnd * 0.55) target = Math.floor(base * 0.5);
+      else target = base;
+      if (m.count !== target) m.count = target;
     }
   }
 

@@ -82,6 +82,7 @@ export const UAV_KILLSTREAK = 5;        // 5 连杀触发
 export const UAV_DURATION = 10;         // 秒
 
 // AI 基础配置（server/ai.js 可覆盖细节）
+// 难度取向：接近"普通玩家"——反应慢、瞄准误差大、点射之间有停顿，不做神枪手。
 export const AI_CONFIG = {
   max: 5,
   allyCount: 2,
@@ -92,12 +93,12 @@ export const AI_CONFIG = {
   hearingShot: 45,
   hearingStep: 12,
   loseMemoryMs: 6000,
-  reactionMin: 180,
-  reactionMax: 420,
-  aimErrorStart: 0.16,
-  aimErrorMin: 0.012,
-  aimSettle: 1.2,
-  turnRate: 3.4,
+  reactionMin: 340,
+  reactionMax: 720,
+  aimErrorStart: 0.30,
+  aimErrorMin: 0.045,
+  aimSettle: 1.8,
+  turnRate: 3.0,
   shootRange: 55,
   damageMult: 1.0,
   healthMult: 1.0,

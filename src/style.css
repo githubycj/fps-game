@@ -1357,6 +1357,38 @@ b { font-weight: 700; }
   100% { opacity: 0.3; }
 }
 
+/* ---------- 11.5 受击方向：正态分布曲线扇形 ---------- */
+.dmg-svg-layer {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: min(64vh, 64vw);
+  height: min(64vh, 64vw);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  overflow: visible;
+  z-index: 4;
+}
+.dmg-curve {
+  transform-origin: 0 0;
+  animation: dmgCurveIn 0.95s ease-out forwards;
+}
+.dmg-tip {
+  animation: dmgTipIn 0.95s ease-out forwards;
+}
+.dmg-svg-layer g.fade { opacity: 0; transition: opacity 0.32s ease-out; }
+@keyframes dmgCurveIn {
+  0% { opacity: 0; transform: scale(0.86); }
+  14% { opacity: 1; transform: scale(1); }
+  65% { opacity: 0.9; }
+  100% { opacity: 0.15; }
+}
+@keyframes dmgTipIn {
+  0% { opacity: 0; r: 4; }
+  18% { opacity: 1; r: 8; }
+  100% { opacity: 0.25; r: 6; }
+}
+
 /* 受击红闪（低饱和暗红暗角） */
 #flash {
   position: absolute;

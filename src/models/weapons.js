@@ -95,12 +95,13 @@ function getMaterial(group) {
       roughness: 0.72, metalness: 0.06, envMapIntensity: 0.8,
     });
   } else {
-    // 镜片：玻璃质感（低粗糙 + 极淡金属感 + 透明）
+    // 镜片：极淡抗反射镀膜（几乎透明 + 不写深度），保证透过镜片能看清准星与目标
     m = new THREE.MeshStandardMaterial({
-      color: COL.glass, roughness: 0.06, metalness: 0.12,
-      transparent: true, opacity: 0.30, depthWrite: false,
-      side: THREE.DoubleSide, envMapIntensity: 1.6,
+      color: 0xdff0ff, roughness: 0.08, metalness: 0.0,
+      transparent: true, opacity: 0.07, depthWrite: false,
+      side: THREE.DoubleSide, envMapIntensity: 0.8,
     });
+    m.toneMapped = true;
   }
   matCache.set(group, m);
   return m;
@@ -536,20 +537,22 @@ function buildSmg(b) {
   b.cylX(0.012, 0.020, [0, 0.123, 0.012], 'metal', COL.steelDark);
   b.box(0.004, 0.005, 0.004, [0, 0.135, 0.012], 'metal', COL.steelBlack);
 
-  // 红点镜（micro red dot：镜座 / 镜体 / 护罩 / 镜框 / 镜片 / 旋钮 / 电池仓）
+  // 红点镜（micro red dot：镜座 / 镜框 / 镜片 / 旋钮 / 电池仓）
+  // 镜框只保留上下两条 + 四个角柱，中间完全镂空——玩家透过镜片能直接看到准星与目标
   b.box(0.026, 0.010, 0.048, [0, 0.1265, -0.095], 'metal', COL.steelDark);
   b.cylX(0.004, 0.030, [0, 0.121, -0.075], 'metal', COL.steelWorn);
-  b.rbox(0.032, 0.038, 0.056, 0.004, [0, 0.149, -0.095], 'polymer', COL.polymerBlack, null, true);
-  b.box(0.034, 0.005, 0.058, [0, 0.170, -0.095], 'polymer', COL.polymerBlack);
-  b.box(0.034, 0.005, 0.058, [0, 0.128, -0.095], 'polymer', COL.polymerBlack);
-  for (const sx of [-1, 1]) b.box(0.005, 0.042, 0.058, [sx * 0.0160, 0.149, -0.095], 'polymer', COL.polymerBlack);
-  for (const z of [-0.121, -0.069]) b.torus(0.0125, 0.0026, [0, 0.149, z], 'metal', COL.steelDark);
-  b.box(0.024, 0.024, 0.0016, [0, 0.149, -0.120], 'glass', COL.glass);
-  b.box(0.022, 0.022, 0.0016, [0, 0.149, -0.070], 'glass', COL.glass);
-  b.cylY(0.0075, 0.014, [0, 0.178, -0.095], 'metal', COL.steelWorn, 12);
-  b.cylY(0.0055, 0.006, [0, 0.187, -0.095], 'metal', COL.steelDark, 12);
-  b.cylX(0.0075, 0.014, [0.021, 0.149, -0.095], 'metal', COL.steelWorn, 12);
-  b.cylX(0.006, 0.010, [-0.021, 0.149, -0.100], 'metal', COL.steelDark, 12);
+  b.rbox(0.030, 0.020, 0.036, 0.004, [0, 0.132, -0.095], 'polymer', COL.polymerBlack, null, true);
+  b.box(0.034, 0.0045, 0.006, [0, 0.1735, -0.095], 'polymer', COL.polymerBlack);
+  b.box(0.034, 0.0045, 0.006, [0, 0.1245, -0.095], 'polymer', COL.polymerBlack);
+  for (const sx of [-1, 1]) b.box(0.0045, 0.053, 0.006, [sx * 0.0168, 0.149, -0.095], 'polymer', COL.polymerBlack);
+  for (const z of [-0.121, -0.069]) b.torus(0.0125, 0.0024, [0, 0.149, z], 'metal', COL.steelDark);
+  // 镜片：极淡抗反射镀膜（几乎透明），避免挡住视线
+  b.box(0.024, 0.050, 0.0012, [0, 0.149, -0.120], 'glass', COL.glass);
+  b.box(0.022, 0.048, 0.0012, [0, 0.149, -0.070], 'glass', COL.glass);
+  b.cylY(0.0075, 0.014, [0, 0.176, -0.095], 'metal', COL.steelWorn, 12);
+  b.cylY(0.0055, 0.006, [0, 0.185, -0.095], 'metal', COL.steelDark, 12);
+  b.cylX(0.0075, 0.014, [0.0175, 0.149, -0.095], 'metal', COL.steelWorn, 12);
+  b.cylX(0.006, 0.010, [-0.0175, 0.149, -0.100], 'metal', COL.steelDark, 12);
 
   // 握把（含防滑纹）
   b.rbox(0.046, 0.095, 0.052, 0.010, grip, 'polymer', COL.polymerBlack, [A, 0, 0], true);
@@ -1110,9 +1113,11 @@ export function makeRedDotSprite(color = COL.dotRed, size = 0.010) {
     });
     dotMatCache.set(key, material);
   }
+  // 注意：红点 sprite 的材质在缓存中共享，depthTest=false 对所有红点生效（开镜时才会显示）
+  material.depthTest = false;
   const sprite = new THREE.Sprite(material);
   sprite.scale.set(size, size, 1);
-  sprite.renderOrder = 10;
+  sprite.renderOrder = 1000;
   sprite.frustumCulled = false;
   sprite.name = 'redDotSprite';
   return sprite;

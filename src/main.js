@@ -14,6 +14,7 @@ import { initAudio, sfx, setAudioListener, startAmbience, stopAmbience } from '.
 import { createCharacter } from './models/character.js';
 import { createWeaponModel } from './models/weapons.js';
 import { initHud, hud } from './hud.js';
+import { uploadTexturesStep, pendingUploadCount } from './world/textures.js';
 
 // ---------- 设置（localStorage / HUD 设置面板共享） ----------
 const SENS_BASE = 0.0022;
@@ -1047,69 +1048,71 @@ window.addEventListener('resize', () => {
   if (world.onResize) world.onResize(innerWidth, innerHeight, renderer);
 });
 
-// ---------- 预编译材质/着色器：把"进入游戏第一帧"的卡顿提前到主菜单阶段 ----------
-function prewarmAssets() {
-  if (!scene || !camera || !renderer) return;
-  let warm = null;
-  const extraGroups = [];
+// ---------- 分帧预编译材质/着色器：把"进入游戏第一帧"的卡顿拆到多帧 ----------
+const prewarmGroups = [];
+function makePrewarmGroup(full) {
+  const g = new THREE.Group();
+  g.name = 'prewarm';
+  g.position.set(0, -300, 0);
+  scene.add(g);
+  const extras = [];
   try {
-    warm = new THREE.Group();
-    warm.name = 'prewarm';
-    warm.position.set(0, -300, 0);
-    scene.add(warm);
-    // 角色材质（远程玩家首次出现时不再编译）
     const ch = createCharacter({ color: 0x8a93a6, team: 'alpha', variant: 1 });
     ch.root.position.set(0, -300, 0);
-    warm.add(ch.root);
-    // 全部第一/第三人称武器模板材质
+    g.add(ch.root);
+    prewarmGroups.push({ group: g, ch, extras });
+    // 第 1 批只要角色材质（最常用）
+    if (full === 0) return { group: g, ch, extras };
     for (const id of WEAPON_ORDER) {
-      const g = createWeaponModel(id, { firstPerson: false });
-      g.position.set(2, -300, 0);
-      warm.add(g);
-      extraGroups.push(g);
+      const w = createWeaponModel(id, { firstPerson: false });
+      w.position.set(2, -300, 0);
+      g.add(w);
+      extras.push(w);
     }
-    // 拾取物模型材质
-    for (const type of ['ak47', 'sniper', 'shotgun', 'medkit', 'shield', 'speed']) {
-      try {
-        const g = world.createItemMesh ? world.createItemMesh(type) : null;
-        if (g) { g.position.set(-3, -300, 0); warm.add(g); extraGroups.push(g); }
-      } catch { /* ignore */ }
+    if (full === 3) {
+      for (const type of ['ak47', 'sniper', 'shotgun', 'medkit', 'shield', 'speed']) {
+        try {
+          const it = world.createItemMesh ? world.createItemMesh(type) : null;
+          if (it) { it.position.set(-3, -300, 0); g.add(it); extras.push(it); }
+        } catch { /* ignore */ }
+      }
     }
-    // 战斗特效材质（粒子/枪口焰/血雾）
-    try {
-      effects.muzzleFlash(new THREE.Vector3(0, -300, 0), new THREE.Vector3(0, 0, -1), 'sniper');
-      effects.impact(new THREE.Vector3(0, -300, 0), new THREE.Vector3(0, 1, 0), 'dirt', 'ak47');
-      effects.bloodImpact(new THREE.Vector3(0, -300, 0), new THREE.Vector3(0, 0, 1), true);
-    } catch { /* ignore */ }
+  } catch { /* ignore */ }
+  return { group: g, ch: null, extras };
+}
 
+function prewarmBatch(full) {
+  if (!scene || !camera || !renderer) return;
+  const item = makePrewarmGroup(full);
+  try {
+    // 战斗特效材质（枪口焰/血雾/弹着粒子）
+    if (full === 2 || full === 3) {
+      const far = new THREE.Vector3(0, -300, 0);
+      try { effects.muzzleFlash(far, new THREE.Vector3(0, 0, -1), 'sniper'); } catch { /* ignore */ }
+      try { effects.impact(far, new THREE.Vector3(0, 1, 0), 'dirt', 'ak47'); } catch { /* ignore */ }
+      try { effects.bloodImpact(far, new THREE.Vector3(0, 0, 1), true); } catch { /* ignore */ }
+    }
     const cleanup = () => {
       try {
-        if (warm) {
-          scene.remove(warm);
-          for (const g of extraGroups) {
-            try { world.forgetItem && world.forgetItem(g); } catch { /* ignore */ }
-            warm.remove(g);
+        if (item.group) scene.remove(item.group);
+        for (const e of item.extras || []) {
+          try { if (e.userData && e.userData.kind) { scene.remove(e); } } catch { /* ignore */ }
+        }
+        try { if (item.ch) item.ch.dispose(); } catch { /* ignore */ }
+        if (world.forgetItem) {
+          for (const e of item.extras || []) {
+            try { if (e.name && e.name.indexOf('item') >= 0) world.forgetItem(e); } catch { /* ignore */ }
           }
-          try { ch.dispose && ch.dispose(); } catch { /* ignore */ }
         }
       } catch { /* ignore */ }
-      warm = null;
-    };
-    const doCompile = () => {
-      try {
-        if (renderer.compile) renderer.compile(scene, camera);
-      } catch { /* ignore */ }
-      cleanup();
     };
     if (typeof renderer.compileAsync === 'function') {
       renderer.compileAsync(scene, camera).then(cleanup, cleanup);
     } else {
-      setTimeout(doCompile, 30);
+      try { if (renderer.compile) renderer.compile(scene, camera); } catch { /* ignore */ }
+      cleanup();
     }
-  } catch (e) {
-    errors.push('prewarm: ' + (e && e.message));
-    if (warm) scene.remove(warm);
-  }
+  } catch { /* ignore */ }
 }
 
 // ---------- 初始化 HUD / 启动 ----------
@@ -1120,9 +1123,28 @@ H.setMenuVisible && H.setMenuVisible(true);
 H.showMenu && H.showMenu();
 setConnStatus('未连接');
 loop();
-// 主菜单显示后预编译所有材质/特效着色器，避免"进入游戏第一帧"卡顿
-setTimeout(prewarmAssets, 600);
-setTimeout(() => { try { if (renderer.compile) renderer.compile(scene, camera); } catch { /* ignore */ } }, 1600);
+// 分帧资源上传：主菜单阶段每帧上传 2 张程序化贴图 + 逐步预编译材质，
+// 避免"进入游戏"时一次性上传所有贴图/编译所有着色器导致强卡顿。
+(function scheduleAssetWarmup() {
+  let frames = 0;
+  const tick = () => {
+    frames += 1;
+    try {
+      if (frames < 240) {
+        const left = uploadTexturesStep(2);
+        if (frames === 2 || frames === 90) prewarmBatch(frames === 90 ? 2 : 0);
+      } else if (frames < 320) {
+        // 剩下的直接一次性标记上传，保证进入游戏前全部就绪
+        const left = uploadTexturesStep(64);
+        if (left === 0) { prewarmBatch(3); return; }
+      } else {
+        return;
+      }
+    } catch { /* ignore */ }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+})();
 
 // ---------- 调试/自动化接口 ----------
 window.__game = {
@@ -1169,6 +1191,7 @@ window.__game = {
   get hitmarkerPart() { return lastHitmarkerPart; },
   get matchPhase() { return matchPhase; },
   get matchCountdown() { return matchCountdown; },
+  get pendingTextures() { return pendingUploadCount(); },
   get scopeActive() { return local ? local.scopeActive : false; },
   get qualityLevel() { return qualityLevel; },
   get settings() { return settings; },
