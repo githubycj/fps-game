@@ -32,6 +32,11 @@ npm start            # 服务器监听 3001，同时托管前端与 WebSocket
 > 若构建时遇到 Windows 临时目录权限问题，可把 TEMP/TMP 指向工程内目录后再构建
 > （`set TEMP=%cd%\.tmp & set TMP=%cd%\.tmp & npm run build`）。
 > 端口可用 `PORT` 环境变量修改（游戏服务器），`VITE_PORT` 修改 Vite 端口。
+>
+> **关于 `[vite] ws proxy socket error: Error: read ECONNRESET`**：这是正常现象——
+> 关闭标签页 / 刷新页面 / 断网时浏览器会直接断开 TCP，Vite 的 WebSocket 代理会把这条
+> 连接重置记录成日志，紧接着服务器打印 `[-] 玩家名 离开`。不影响游戏，
+> 也**不是崩溃**。现在 `vite.config.js` 已对 `ECONNRESET/EPIPE` 做静默处理，正常断开不再刷屏。
 
 ## 操作
 
