@@ -696,39 +696,56 @@ export class Effects {
     const dir = normalizeDir(direction, _fwd);
     const head = !!headshot;
     const origin = { x: pos.x, y: pos.y, z: pos.z };
-    // 血雾：细小红点沿弹道喷出并迅速扩散
+    // 血雾：明显可见的红色喷溅（尺寸/数量都放大，确保第三人称距离也能看清）
     this._emit({
       origin,
       normal: dir,
-      count: head ? 24 : 13,
-      color: head ? 0xa51c14 : 0x8a1a12,
-      size: head ? 0.08 : 0.055,
-      life: head ? 0.75 : 0.55,
-      speed: 2.6,
-      spread: 1.6,
-      gravity: 0.6,
+      count: head ? 34 : 20,
+      color: head ? 0xc02018 : 0xb01c14,
+      size: head ? 0.15 : 0.11,
+      life: head ? 0.9 : 0.7,
+      speed: 3.0,
+      spread: 1.7,
+      gravity: 0.7,
       drag: 0.93,
-      grow: 2.6,
+      grow: 3.0,
+      opacity: 0.92,
+      blending: THREE.NormalBlending,
+      jitter: 0.10,
+    });
+    // 近距离红色雾团：从命中点快速扩散，是玩家最容易看到的反馈
+    this._emit({
+      origin,
+      normal: dir,
+      count: head ? 16 : 10,
+      color: 0xd6281c,
+      size: head ? 0.34 : 0.24,
+      life: head ? 0.42 : 0.34,
+      speed: 0.7,
+      spread: 1.1,
+      gravity: -0.2,
+      drag: 0.9,
+      grow: 4.2,
       opacity: 0.85,
       blending: THREE.NormalBlending,
-      jitter: 0.06,
+      jitter: 0.16,
     });
     // 血滴：受重力下落，落地前消失
     this._emit({
       origin,
       normal: dir,
-      count: head ? 14 : 8,
-      color: 0x6e0f0c,
-      size: head ? 0.07 : 0.055,
-      life: 0.9,
-      speed: 3.0,
-      spread: 1.2,
+      count: head ? 18 : 12,
+      color: 0x8f140e,
+      size: head ? 0.085 : 0.07,
+      life: 1.0,
+      speed: 3.4,
+      spread: 1.3,
       gravity: 9.8,
       drag: 0.995,
       grow: 0,
       opacity: 0.95,
       blending: THREE.NormalBlending,
-      jitter: 0.08,
+      jitter: 0.12,
     });
   }
 

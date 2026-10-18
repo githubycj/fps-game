@@ -306,6 +306,7 @@ try {
     await sleep(700);
     let bodyHit = false;
     let bodyMark = null;
+    let bloodCountBefore = 0;
     for (let i = 0; i < 6 && !bodyHit; i++) {
       const p = await readPlayer();
       debugSend({ t: 'debug_hp', name: 'Dummy', hp: 100 });
@@ -322,12 +323,41 @@ try {
         l.lastFire = 0;
         l.recoilPitch = 0; l.spreadHeat = 0;
       }, { bodyC: BODY_C });
+      bloodCountBefore = await evaluate(() => window.__game.effects.count());
       await evaluate(() => { const l = window.__game.local; l.lastFire = 0; return !!l.tryFire(); });
       bodyMark = await waitMarker('body', 1000);
       bodyHit = !!bodyMark;
       if (!bodyHit) await sleep(160);
     }
+    const bloodCountAfter = await evaluate(() => window.__game.effects.count());
     check('射击命中敌人身体（服务器 hit → 白色十字标记）', bodyHit, bodyMark ? 'part=body' : 'no marker');
+    check('命中敌人产生红色血雾粒子', bodyHit && bloodCountAfter > bloodCountBefore,
+      `particles ${bloodCountBefore} -> ${bloodCountAfter}`);
+
+    // 开镜时手臂必须仍然跟随枪身（不能"枪和手分离"）
+    await mouseDown(640, 360, 'right');
+    let armState = null;
+    for (let i = 0; i < 20; i++) {
+      await sleep(200);
+      armState = await evaluate(() => {
+        const sc = window.__game.scope;
+        const g = sc.active;
+        const l = window.__game.local;
+        if (!g || l.adsAmount < 0.75) return null;
+        const gripLocal = g.userData.rightGrip.clone().applyMatrix4(g.matrix);
+        const handLocal = sc._arms.right.hand.position;
+        return {
+          ads: l.adsAmount,
+          armsVisible: sc._arms.group.visible,
+          dist: +handLocal.distanceTo(gripLocal).toFixed(3),
+        };
+      });
+      if (armState && armState.ads > 0.75) break;
+    }
+    await mouseUp(640, 360, 'right');
+    await sleep(300);
+    check('开镜时手臂仍贴合枪身（不分离）', !!armState && armState.armsVisible && armState.dist < 0.12,
+      armState ? `ads=${armState.ads.toFixed(2)} dist=${armState.dist}m` : 'no ad state');
 
     // 4.3 爆头链路：同一静止靶，瞄准头部
     let headHit = false;
@@ -354,6 +384,24 @@ try {
       if (!headHit) await sleep(180);
     }
     check('爆头命中触发红色斜线标记（part=head）', headHit, headMark ? 'part=head' : 'no head marker');
+
+    // 远程玩家枪口焰位置：应由武器枪口世界坐标决定，而不是服务器给的"眼睛"位置
+    await evaluate(() => { window.__lastRemoteShot = null; });
+    const dummyState = (await readPlayer());
+    debugSend({ t: 'shoot', yaw: Math.PI * 0.5, pitch: 0 });
+    let remoteShot = null;
+    for (let i = 0; i < 30; i++) {
+      await sleep(200);
+      remoteShot = await evaluate(() => window.__lastRemoteShot);
+      if (remoteShot) break;
+    }
+    const muzzleGap = remoteShot ? Math.hypot(
+      remoteShot.muzzle[0] - remoteShot.eye[0],
+      remoteShot.muzzle[1] - remoteShot.eye[1],
+      remoteShot.muzzle[2] - remoteShot.eye[2],
+    ) : 0;
+    check('远程枪口焰在枪口位置（不是头部）', !!remoteShot && muzzleGap > 0.12 && remoteShot.muzzle[1] <= remoteShot.eye[1] + 0.02,
+      remoteShot ? `muzzle-eye=${muzzleGap.toFixed(2)}m` : 'no shot event');
     await page.screenshot(path.join(SHOT_DIR, '04-combat.png'));
   }
 

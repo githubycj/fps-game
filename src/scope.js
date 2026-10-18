@@ -41,6 +41,8 @@ const _v1 = new THREE.Vector3();
 const _v2 = new THREE.Vector3();
 const _v3 = new THREE.Vector3();
 const _v4 = new THREE.Vector3();
+const _shoulderR = new THREE.Vector3();
+const _shoulderL = new THREE.Vector3();
 const _q1 = new THREE.Quaternion();
 const _UP = new THREE.Vector3(0, 1, 0);
 
@@ -93,8 +95,8 @@ export class ScopeController {
       const upper = sleeve(0.032);
       const fore = sleeve(0.026);
       const cuffMesh = cuff(0.029);
-      const handGeo = new THREE.BoxGeometry(0.05, 0.055, 0.085);
-      handGeo.translate(0, 0.026, 0);
+      const handGeo = new THREE.BoxGeometry(0.044, 0.05, 0.075);
+      handGeo.translate(0, 0.024, 0);
       const hand = new THREE.Mesh(handGeo, gloveMat);
       group.add(upper, fore, cuffMesh, hand);
       return { upper, fore, cuff: cuffMesh, hand };
@@ -107,7 +109,14 @@ export class ScopeController {
   _solveArm(arm, shoulder, target, pole, gunQuat) {
     _v1.subVectors(target, shoulder);
     let d = _v1.length();
-    const L1 = ARM.upperLen, L2 = ARM.foreLen;
+    let L1 = ARM.upperLen, L2 = ARM.foreLen;
+    // 开镜时枪会前移到瞄准位置，手臂需要略微"拉伸"才能一直握住枪；
+    // 允许有限度的动态延长，避免手掌脱离握把（视觉上远好于悬空）。
+    const reach = L1 + L2 - 0.02;
+    if (d > reach) {
+      const k = Math.min(1.6, d / reach);
+      L1 *= k; L2 *= k;
+    }
     d = Math.max(0.12, Math.min(L1 + L2 - 0.02, d));
     _v2.copy(_v1).normalize();
     // 肘部：余弦定理 + pole 方向正交化
@@ -145,8 +154,12 @@ export class ScopeController {
     this._gripR.applyMatrix4(gun.matrix);
     this._gripL.applyMatrix4(gun.matrix);
     const handQuat = gun.quaternion;
-    this._solveArm(rig.right, ARM.shoulderR, this._gripR, ARM.poleR, handQuat);
-    this._solveArm(rig.left, ARM.shoulderL, this._gripL, ARM.poleL, handQuat);
+    // 开镜时肩膀随枪前倾（模拟抵肩），让手臂自然够到前移后的握把
+    const ads = this.adsVisual || 0;
+    _shoulderR.copy(ARM.shoulderR); _shoulderR.z -= ads * 0.30; _shoulderR.y -= ads * 0.04;
+    _shoulderL.copy(ARM.shoulderL); _shoulderL.z -= ads * 0.24; _shoulderL.y -= ads * 0.03;
+    this._solveArm(rig.right, _shoulderR, this._gripR, ARM.poleR, handQuat);
+    this._solveArm(rig.left, _shoulderL, this._gripL, ARM.poleL, handQuat);
     rig.group.visible = true;
   }
 
@@ -256,8 +269,8 @@ export class ScopeController {
     gun.position.set(px, py, pz);
     gun.rotation.set(rx, ry, rz);
     gun.visible = !this.scopeActive && (p.alive !== false);
-    // 开镜时隐藏程序化手臂（粗糙的方块手会挡住机瞄），只保留枪身与瞄准具
-    const armsOn = gun.visible && ads < 0.5;
+    // 开镜时手臂必须继续跟随枪身（否则会出现"枪和手分离"）；只有狙击镜隐藏枪身时一起隐藏
+    const armsOn = gun.visible;
     if (this._arms) this._arms.group.visible = armsOn;
     if (armsOn) this._updateArms(gun);
 

@@ -295,7 +295,8 @@ export function createVegetation({ preset } = {}) {
 
   // ================= 草叶 =================
   const bladeH = 0.30;
-  const bladeGeo = makeBladeGeometry(bladeH, 0.075, 3, 0.10);
+  // 2 段草叶（4 个三角形），在视觉效果接近的前提下显著减少顶点/填充开销
+  const bladeGeo = makeBladeGeometry(bladeH, 0.085, 2, 0.10);
   disposables.push(bladeGeo);
   const bladeMat = new THREE.MeshLambertMaterial({
     vertexColors: true,
@@ -306,8 +307,8 @@ export function createVegetation({ preset } = {}) {
   disposables.push(bladeMat);
 
   const grassPlacements = [];
-  const GRASS_STEP = 0.40;
-  const GRASS_CAP = 68000;
+  const GRASS_STEP = 0.46;
+  const GRASS_CAP = 36000;
   // 草色（sRGB 十六进制 → 线性工作空间）：深橄榄 ↔ 初秋枯黄（整体提亮，避免逆光发黑）
   const GRASS_A = new THREE.Color(0x8b9a55);
   const GRASS_B = new THREE.Color(0xd8c98a);
@@ -372,7 +373,7 @@ export function createVegetation({ preset } = {}) {
   disposables.push(weedMat);
 
   const weedPlacements = [];
-  const WEED_CAP = 5200;
+  const WEED_CAP = 3200;
   const WEED_A = new THREE.Color(0x85935a);
   const WEED_B = new THREE.Color(0xc4b478);
   const _weedCol = new THREE.Color();

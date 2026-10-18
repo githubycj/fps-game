@@ -324,6 +324,9 @@ const _muzzle = new THREE.Vector3();
 const _dir = new THREE.Vector3();
 const _right = new THREE.Vector3();
 const _origin = new THREE.Vector3();
+const _remoteMuzzle = new THREE.Vector3();
+const _bloodPos = new THREE.Vector3();
+const _toCam = new THREE.Vector3();
 
 function fireVisual(result) {
   const gun = scope.active || gunModels[local.weapon];
@@ -569,6 +572,12 @@ pauseEl && pauseEl.addEventListener('click', () => {
   shooting = false;
   requestLock();
 });
+// 死亡遮罩点击（若浏览器已释放指针锁，也允许点一下重新锁定）
+const deathEl = document.getElementById('death');
+deathEl && deathEl.addEventListener('click', () => {
+  if (!local || !local.alive || document.pointerLockElement) return;
+  requestLock();
+});
 
 function onWeaponChanged() {
   if (!local) return;
@@ -647,6 +656,11 @@ net.on('state', (m) => {
       deathVisible = false;
       H.hideDeath();
       S.respawn();
+      // 死亡期间指针锁可能被系统释放：重生后提示点击继续，避免"鼠标无法控制"
+      if (!document.pointerLockElement) {
+        if (local) local.locked = false;
+        showPause('点击画面继续战斗');
+      }
     }
   }
   // 远程玩家同步
@@ -734,26 +748,38 @@ net.on('pickup', (m) => {
 net.on('shot', (m) => {
   if (!started || !m || m.shooterId === myId) return;
   const w = weaponOf(m.weapon);
-  const pos = v3({ x: m.x, y: m.y, z: m.z });
+  const eyePos = v3({ x: m.x, y: m.y, z: m.z });
   const dir = new THREE.Vector3(m.dx || 0, m.dy || 0, m.dz || 0).normalize();
-  // 枪口焰（远处可见）
-  try { effects.muzzleFlash(pos, dir, m.weapon); } catch { /* ignore */ }
-  // 距离/声像
-  const dx = pos.x - camera.position.x, dy = pos.y - camera.position.y, dz = pos.z - camera.position.z;
+  const r = remotes.get(m.shooterId);
+  // 枪口焰放在对方武器模型的枪口 world 坐标（以前用服务器给的"眼睛"位置，会显示在头上）
+  let flashPos = eyePos;
+  if (r && r.char && typeof r.char.getWeaponMuzzleWorld === 'function') {
+    try { flashPos = r.char.getWeaponMuzzleWorld(_remoteMuzzle); } catch { flashPos = eyePos; }
+  }
+  try { effects.muzzleFlash(flashPos, dir, m.weapon); } catch { /* ignore */ }
+  if (window.__game) {
+    window.__lastRemoteShot = {
+      weapon: m.weapon,
+      muzzle: [+flashPos.x.toFixed(2), +flashPos.y.toFixed(2), +flashPos.z.toFixed(2)],
+      eye: [+eyePos.x.toFixed(2), +eyePos.y.toFixed(2), +eyePos.z.toFixed(2)],
+      shooterId: m.shooterId,
+    };
+  }
+  // 距离/声像（按枪口位置计算，更符合听感）
+  const dx = flashPos.x - camera.position.x, dy = flashPos.y - camera.position.y, dz = flashPos.z - camera.position.z;
   const dist = Math.hypot(dx, dy, dz);
   const rightX = Math.cos(local ? local.yaw : 0), rightZ = -Math.sin(local ? local.yaw : 0);
   const pan = dist > 0.5 ? Math.max(-1, Math.min(1, (dx * rightX + dz * rightZ) / dist)) : 0;
   S.shoot(m.weapon, { distance: dist, pan });
-  // 子弹擦身
+  // 子弹擦身（用眼睛→玩家的几何关系）
   if (local && local.alive && dist > 2) {
-    const toPlayer = new THREE.Vector3(-dx, -dy, -dz);
+    const toPlayer = new THREE.Vector3(-(eyePos.x - camera.position.x), -(eyePos.y - camera.position.y), -(eyePos.z - camera.position.z));
     const along = toPlayer.dot(dir);
     if (along > 0 && along < w.range) {
       const closest = Math.hypot(toPlayer.x - dir.x * along, toPlayer.y - dir.y * along, toPlayer.z - dir.z * along);
       if (closest < 2.2) S.whiz();
     }
   }
-  const r = remotes.get(m.shooterId);
   if (r) r.target.firingUntil = performance.now() + 90;
 });
 
@@ -778,7 +804,13 @@ net.on('hit', (m) => {
     H.showHitmarker(m.part, !!m.killed);
     if (m.part === 'head') S.headshotConfirm(); else S.hitConfirm(m.part);
     if (typeof m.x === 'number') {
-      try { effects.bloodImpact(v3(m), _dir, m.part === 'head'); } catch { /* ignore */ }
+      try {
+        _bloodPos.set(m.x, m.y, m.z);
+        // 命中点往摄像机方向挪一点，避免血雾被角色网格遮住内部
+        _toCam.copy(camera.position).sub(_bloodPos).normalize();
+        _bloodPos.addScaledVector(_toCam, 0.12);
+        effects.bloodImpact(_bloodPos, _toCam, m.part === 'head');
+      } catch { /* ignore */ }
     }
     const rv = remotes.get(m.targetId);
     if (rv) rv.target.hitAt = performance.now();
@@ -797,7 +829,7 @@ net.on('death', (m) => {
     if (local) { local.alive = false; local.aiming = false; }
     H.showDeath('你被 ' + (m.killerName || '敌人') + ' 击倒', '重生中…');
     S.death();
-    if (document.pointerLockElement) document.exitPointerLock();
+    // 注意：不退出 pointer lock —— 退出后重生会失去鼠标控制（体验问题）
   } else {
     const victim = remotes.get(m.id);
     H.addKillFeed({ killer: m.killerName || '敌人', victim: victim ? victim.name : '玩家', headshot: m.part === 'head', weapon: m.weapon || '' });

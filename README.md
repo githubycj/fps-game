@@ -134,6 +134,7 @@ npm start            # 服务器监听 3001，同时托管前端与 WebSocket
 
 菜单内可切换 `自动 / 高 / 中 / 低`，或用 URL 无参数时自动检测软件渲染（SwiftShader/llvmpipe）降到低档；
 低帧率时会自动逐级降档（关后期/降阴影/降草密度/降分辨率）。高画质包含阴影、Bloom、调色后期与满草。
+草叶改为 2 段几何并限制总量（3.6 万株），高画质整场约 19 万三角面（旧版约 44 万），显著降低草地掉帧。
 
 ## 测试
 
@@ -147,13 +148,13 @@ node scripts/_prod.mjs            # （开发期）dist 生产构建冒烟（已
 
 `browser-test.mjs` 使用自带的极简 CDP 客户端（`scripts/cdp.mjs`）通过 TCP 调试端口驱动 Chrome：
 不依赖 Playwright，也不依赖打包（`serve-dev.mjs` 用 importmap 直接托管源码），因此在受限环境也能跑。
-截图输出到 `../.verify/`。
+截图输出到 `../.verify/`。回归断言覆盖：开镜时手臂仍贴合枪身、命中产生红色血雾粒子、远程枪口焰位于枪口而不是头部。
 
 当前验证结果：
 
 - `validate-world.mjs`：**40/40**
 - `smoke.mjs`：**96/96**
-- `browser-test.mjs`：**25/25**（软件渲染下亦通过；截图见 `../.verify/`）
+- `browser-test.mjs`：**28/28**（软件渲染下亦通过；截图见 `../.verify/`）
 - `vite build`：通过（dist 约 935KB JS / 28KB CSS）
 
 ## 自动化调试接口

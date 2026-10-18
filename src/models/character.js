@@ -1009,6 +1009,22 @@ export function createCharacter(opts = {}) {
     }
   }
 
+  // 枪口世界坐标（远程玩家枪口焰/弹壳定位用）
+  const _muzzleWorld = new THREE.Vector3();
+  function getWeaponMuzzleWorld(out) {
+    const v = out || _muzzleWorld;
+    if (!weaponNode) {
+      root.getWorldPosition(v);
+      v.y += 1.35;
+      return v;
+    }
+    const ud = weaponNode.userData || {};
+    if (ud.muzzle && typeof ud.muzzle.x === 'number') v.copy(ud.muzzle);
+    else v.set(0, 0.05, -0.9);
+    weaponNode.localToWorld(v);
+    return v;
+  }
+
   // ------------------------------------------------------------------
   // 释放（几何体独享；材质是模块级共享缓存，不释放）
   // ------------------------------------------------------------------
@@ -1028,6 +1044,7 @@ export function createCharacter(opts = {}) {
     head,
     update,
     attachWeapon,
+    getWeaponMuzzleWorld,
     dispose,
     // 便于测试/调试：关节引用、姿态层、武器父节点、当前状态
     body,
