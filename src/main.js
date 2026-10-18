@@ -579,6 +579,8 @@ const ALLOWED_CODES = new Set([
   'ShiftLeft', 'ShiftRight',
   'ControlLeft', 'ControlRight',
   'KeyC', 'Space', 'KeyR',
+  // 后台命令控制台呼出键
+  'Backquote', 'Enter', 'NumpadEnter', 'Escape',
 ]);
 function blockShortcuts(e) {
   // 菜单输入框内不拦截（昵称输入）
@@ -596,11 +598,145 @@ function blockShortcuts(e) {
   if (ALLOWED_CODES.has(code)) return;
   e.preventDefault();
 }
+
+// ---------- 后台命令控制台（/add 1 ai 等）----------
+const CMD_HISTORY_MAX = 20;
+const cmdHistory = [];
+let cmdBusy = false;
+function cmdAppend(text, cls) {
+  const log = document.getElementById('cmdLog');
+  if (!log) return;
+  const div = document.createElement('div');
+  div.className = cls || '';
+  div.textContent = text;
+  log.appendChild(div);
+  while (log.childElementCount > 40) log.removeChild(log.firstChild);
+  log.scrollTop = log.scrollHeight;
+}
+function isCmdOpen() {
+  const box = document.getElementById('cmdBox');
+  return !!box && !box.classList.contains('hidden');
+}
+function openCmd(prefill) {
+  const box = document.getElementById('cmdBox');
+  const input = document.getElementById('cmdInput');
+  if (!box || !input) return;
+  box.classList.remove('hidden');
+  if (typeof prefill === 'string') input.value = prefill;
+  // 打开控制台时释放指针锁，否则无法输入
+  if (document.pointerLockElement) document.exitPointerLock();
+  if (local) { local.locked = false; local.keys.clear(); local.aiming = false; local.jumpHeld = false; }
+  shooting = false;
+  // 必须立即聚焦（若延后到 setTimeout，浏览器会把焦点移到 body）
+  try { input.focus(); } catch { /* ignore */ }
+  try { input.select(); } catch { /* ignore */ }
+}
+function closeCmd() {
+  const box = document.getElementById('cmdBox');
+  const input = document.getElementById('cmdInput');
+  if (box) box.classList.add('hidden');
+  if (input) { input.value = ''; input.blur(); }
+  try { requestLock(); } catch { /* ignore */ }
+}
+// 解析 "/add 1 ai" / "add clear ai" / "/add -1 ai"
+function parseCommand(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+  const parts = raw.replace(/^\//, '').split(/\s+/).filter(Boolean);
+  const cmd = (parts.shift() || '').toLowerCase();
+  // 支持 "/add" 单独输入后按提示再补参数，这里只做简单补全
+  if (cmd === 'add' || cmd === 'bots' || cmd === 'help' || cmd === '/add') {
+    return { cmd: cmd.replace(/^\//, ''), args: parts };
+  }
+  return { cmd, args: parts };
+}
+function runCommand(text) {
+  const parsed = parseCommand(text);
+  if (!parsed) return;
+  const { cmd, args } = parsed;
+  if (cmd === 'help' || cmd === '?' || cmd === '') {
+    cmdAppend('可用命令：', 'ok');
+    cmdAppend('/add 1 ai        增加 1 个 AI');
+    cmdAppend('/add 3 ai        增加 3 个 AI');
+    cmdAppend('/add -1 ai       减少 1 个 AI');
+    cmdAppend('/add clear ai    清空所有 AI');
+    cmdAppend('/add 1 ai alpha  友军 AI（默认 bravo 敌军）');
+    cmdAppend('/bots            查看当前 AI 数量');
+    return;
+  }
+  if (cmd === 'add' || cmd === 'bots') {
+    if (cmd === 'add') {
+      const count = args[0];
+      const kind = args[1] || 'ai';
+      if (count == null) { cmdAppend('用法：/add 1 ai  ·  /add -1 ai  ·  /add clear ai', 'err'); return; }
+      cmdAppend('> /' + text.replace(/^\//, ''));
+      net.send({ t: 'command', text: 'add ' + count + ' ' + kind + (args[2] ? ' ' + args[2] : '') });
+    } else {
+      net.send({ t: 'command', text: 'bots' });
+    }
+    return;
+  }
+  cmdAppend('未知命令 /' + cmd + '，输入 help 查看用法', 'err');
+}
+{
+  const input = document.getElementById('cmdInput');
+  if (input) {
+    input.addEventListener('keydown', (e) => {
+      // 输入框内不触发游戏按键
+      e.stopPropagation();
+      if (e.code === 'Enter' || e.code === 'NumpadEnter') {
+        e.preventDefault();
+        const text = input.value.trim();
+        if (!text) { closeCmd(); return; }
+        if (cmdHistory[cmdHistory.length - 1] !== text) cmdHistory.push(text);
+        while (cmdHistory.length > CMD_HISTORY_MAX) cmdHistory.shift();
+        input.value = '';
+        runCommand(text);
+        return;
+      }
+      if (e.code === 'Escape' || e.code === 'Backquote') {
+        e.preventDefault();
+        closeCmd();
+        return;
+      }
+      // ↑/↓ 历史命令
+      if (e.code === 'ArrowUp' || e.code === 'ArrowDown') {
+        e.preventDefault();
+        if (!cmdHistory.length) return;
+        const idx = Number(input.dataset.histIdx ?? cmdHistory.length);
+        const next = e.code === 'ArrowUp'
+          ? Math.max(0, idx - 1)
+          : Math.min(cmdHistory.length, idx + 1);
+        input.dataset.histIdx = String(next);
+        input.value = next >= cmdHistory.length ? '' : cmdHistory[next];
+        return;
+      }
+    });
+  }
+}
+// 点击控制台外部关闭
+document.addEventListener('mousedown', (e) => {
+  if (!isCmdOpen()) return;
+  const box = document.getElementById('cmdBox');
+  if (box && !box.contains(e.target)) { closeCmd(); }
+});
+
 window.addEventListener('keydown', blockShortcuts, { capture: true });
 window.addEventListener('keyup', blockShortcuts, { capture: true });
 window.addEventListener('keypress', blockShortcuts, { capture: true });
+// Backquote（~）呼出后台命令控制台；游戏中按 Enter 也可呼出
+window.addEventListener('keydown', (e) => {
+  const tag = (e.target && e.target.tagName) || '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return;      // 输入框内交给输入框处理
+  if (e.code === 'Backquote' || (e.code === 'Enter' && !isCmdOpen())) {
+    e.preventDefault();
+    e.stopPropagation();
+    openCmd(e.code === 'Enter' ? '' : '');
+  }
+}, { capture: true });
 // Esc 会退出指针锁：拦截并锁定（游戏内不需要 Esc）
 window.addEventListener('keydown', (e) => {
+  if (isCmdOpen()) return;
   if (e.code === 'Escape') { e.preventDefault(); try { requestLock(); } catch { /* ignore */ } }
 }, { capture: true });
 document.addEventListener('keyup', (e) => {
@@ -720,6 +856,13 @@ net.on('player_joined', (m) => {
 net.on('player_left', (m) => {
   removeRemote(m.id);
   H.addToast('有玩家离开了战场');
+});
+
+// 后台命令结果
+net.on('command_result', (m) => {
+  const msg = (m && m.msg) || '';
+  cmdAppend(msg, m && m.ok ? 'ok' : 'err');
+  H.addToast(msg);
 });
 
 function remotesListForHud() {

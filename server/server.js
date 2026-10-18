@@ -1649,6 +1649,74 @@ function countBots() {
   return n;
 }
 
+// ============================================================
+// 后台命令：/add <数量|clear> <类型>
+//   /add 1 ai        → 增加 1 个 AI
+//   /add -1 ai       → 减少 1 个 AI
+//   /add 3 ai        → 增加 3 个 AI
+//   /add clear ai    → 清空所有 AI
+//   可选阵营：/add 1 ai alpha（友军）  /add 1 ai bravo（敌军，默认）
+// ============================================================
+function removeBot(bot) {
+  if (!bot) return false;
+  players.delete(bot.id);
+  broadcast({ t: 'player_left', id: bot.id, name: bot.name, team: bot.team });
+  if (isMain) console.log('[-] ' + bot.name + ' 移除，当前 AI ' + countBots() + ' 个');
+  return true;
+}
+
+// 移除最后加入的 AI（优先指定阵营）
+function removeLastBot(teamArg) {
+  const team = teamArg ? normalizeTeam(teamArg) : null;
+  let victim = null;
+  for (const p of players.values()) {
+    if (!p.bot) continue;
+    if (team && p.team !== team) continue;
+    victim = p;   // players 是插入顺序 Map，最后命中的就是最新加入的
+  }
+  return victim ? removeBot(victim) : false;
+}
+
+function cmdAddBot(countArg, kindArg, teamArg) {
+  const kind = String(kindArg || '').toLowerCase();
+  if (kind && kind !== 'ai' && kind !== 'bot') {
+    return { ok: false, msg: '未知类型 "' + kindArg + '"（目前支持 ai）' };
+  }
+  const raw = String(countArg || '').trim().toLowerCase();
+  // /add clear ai → 清空
+  if (raw === 'clear' || raw === 'reset' || raw === 'none') {
+    let removed = 0;
+    for (const p of [...players.values()]) if (p.bot) { if (removeBot(p)) removed += 1; }
+    return { ok: true, action: 'clear', removed, bots: countBots(), msg: '已清空 AI（移除 ' + removed + ' 个）' };
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n === 0) {
+    return { ok: false, msg: '数量必须是整数或 clear，例如 /add 1 ai、/add -1 ai、/add clear ai' };
+  }
+  if (n > 0) {
+    const add = Math.min(20, Math.floor(n));
+    let added = 0;
+    for (let i = 0; i < add; i++) {
+      if (countBots() >= (AI_CONFIG.max ?? 5) * 4) break;   // 安全上限，避免刷爆
+      createBot(teamArg || 'bravo');
+      added += 1;
+    }
+    return { ok: true, action: 'add', added, bots: countBots(), msg: '已新增 ' + added + ' 个 AI（当前 ' + countBots() + ' 个）' };
+  }
+  // 负数：减少
+  let want = Math.min(20, Math.floor(-n));
+  let removed = 0;
+  while (want > 0) {
+    if (!removeLastBot(teamArg)) break;
+    removed += 1;
+    want -= 1;
+  }
+  return {
+    ok: true, action: 'remove', removed, bots: countBots(),
+    msg: removed > 0 ? '已移除 ' + removed + ' 个 AI（当前 ' + countBots() + ' 个）' : '没有可移除的 AI',
+  };
+}
+
 // 兜底 AI：server/ai.js 未就绪或抛错时保证对局仍然可玩（占点 + 看见敌人开火）
 function fallbackAi(bot, now) {
   if (!bot.alive) return;
@@ -2057,6 +2125,24 @@ wss.on('connection', (ws) => {
         send(ws, { t: 'pong', time: msg.time, serverTime: now });
         break;
       }
+      // 后台命令：/add 1 ai、/add -1 ai、/add clear ai
+      case 'command': {
+        if (!player) return;
+        const text = String(msg.text ?? msg.cmd ?? '').trim().replace(/^\//, '');
+        const parts = text.split(/\s+/).filter(Boolean);
+        const cmd = (parts.shift() || '').toLowerCase();
+        let result;
+        if (cmd === 'add') {
+          result = cmdAddBot(parts[0], parts[1], parts[2]);
+        } else if (cmd === 'bots') {
+          result = { ok: true, action: 'info', bots: countBots(), msg: '当前 AI ' + countBots() + ' 个' };
+        } else {
+          result = { ok: false, msg: cmd ? '未知命令 /' + cmd : '空命令' };
+        }
+        send(ws, { t: 'command_result', cmd, ...result });
+        if (isMain) console.log('[cmd] ' + player.name + ' → /' + text + ' ⇒ ' + result.msg);
+        break;
+      }
       default: break;
     }
   });
@@ -2141,6 +2227,8 @@ export {
   aiUpdate,
   canSee,
   countBots,
+  cmdAddBot,
+  removeBot,
   spawnItem,
   applyItem,
   initItems,

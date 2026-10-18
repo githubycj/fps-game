@@ -118,6 +118,18 @@
 
     <div id="toasts"></div>
 
+    <!-- 后台命令控制台（~ 或 Enter 呼出） -->
+    <div id="cmdBox" class="hidden">
+      <div id="cmdLog"></div>
+      <div class="cmd-line">
+        <span class="cmd-prompt">/</span>
+        <input id="cmdInput" maxlength="80" autocomplete="off" spellcheck="false"
+               placeholder="add 1 ai  ·  add -1 ai  ·  add clear ai  ·  bots" />
+      </div>
+    </div>
+
+    <div id="cmdHint" class="hidden">按 ~ 打开后台命令</div>
+
     <!-- 右上：小地图 / 击杀信息 -->
     <div id="hudTopRight">
       <div id="minimapWrap">
