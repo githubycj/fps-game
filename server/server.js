@@ -598,6 +598,8 @@ function snapshot(p) {
     hp: p.hp, maxHp: p.maxHp ?? W.maxHp,
     alive: !!p.alive,
     shield: p.shield || 0,
+    // GOD 无敌剩余时间（ms，0 = 未开启），客户端据此显示标记
+    god: (p.godUntil || 0) > now ? (p.godUntil - now) : 0,
     stamina: Math.round(p.stamina ?? W.staminaMax),
     weapon: p.weapon,
     ammo: { mag: a.mag, reserve: a.reserve === Infinity ? -1 : a.reserve },
@@ -640,6 +642,7 @@ function stateMessage(now = Date.now()) {
     },
     uav: { alpha: uavDeadline('alpha', now), bravo: uavDeadline('bravo', now) },
     killfeed: killfeed.slice(-RULES.killfeedMax),
+    env: { mode: worldEnv.mode },
   };
 }
 function welcomeMessage(p) {
@@ -661,6 +664,7 @@ function welcomeMessage(p) {
     },
     scores: { alpha: Math.round(scores.alpha * 10) / 10, bravo: Math.round(scores.bravo * 10) / 10 },
     uav: { alpha: uavDeadline('alpha'), bravo: uavDeadline('bravo') },
+    env: { mode: worldEnv.mode },
   };
 }
 
@@ -1137,6 +1141,15 @@ function handleShoot(p, msg = {}) {
   for (const rec of hits.values()) {
     const target = rec.target;
     if (!target.alive) continue;
+    // GOD 无敌：不掉血、不消耗护甲
+    if ((target.godUntil || 0) > nowAfter) {
+      send(p.ws, {
+        t: 'god_block', targetId: target.id, targetName: target.name,
+        x: round3(rec.point ? rec.point.x : target.x), y: round3(rec.point ? rec.point.y : target.y), z: round3(rec.point ? rec.point.z : target.z),
+      });
+      send(target.ws, { t: 'god_block', targetId: target.id, targetName: target.name, self: true });
+      continue;
+    }
     const part = rec.head > 0 ? 'head' : (rec.legs > 0 && rec.body === 0 ? 'legs' : 'body');
     let dmg = rec.dmg;
     let absorbed = 0;
@@ -1677,6 +1690,68 @@ function removeLastBot(teamArg) {
   return victim ? removeBot(victim) : false;
 }
 
+// ============================================================
+// 后台命令：/god [秒数]
+//   给本人一次性补满所有武器（每把枪弹匣+备弹，额外 +300 发），
+//   并获得 GOD_DURATION 秒无敌（不掉血），默认 120s。
+// ============================================================
+const GOD_DURATION = 120;       // 秒
+const GOD_EXTRA_AMMO = 300;     // 每把武器额外子弹
+
+function cmdGod(p, secondsArg) {
+  if (!p) return { ok: false, msg: '未加入游戏' };
+  const secs = Math.max(1, Math.min(600, Number(secondsArg) > 0 ? Number(secondsArg) : GOD_DURATION));
+  const until = Date.now() + secs * 1000;
+  p.godUntil = until;
+  p.godApplied = Date.now();
+  // 补满所有已持有武器（并且确保主武器齐全），每把额外 +300 发
+  let weapons = 0;
+  for (const id of Object.keys(p.owned || {})) {
+    const w = weaponOf(id);
+    const magSize = w.magSize ?? 12;
+    const base = Number.isFinite(w.reserveStart) ? w.reserveStart : 0;
+    p.ammo[id] = { mag: magSize, reserve: base + GOD_EXTRA_AMMO };
+    weapons += 1;
+  }
+  // 若还没拿到全部武器，顺手发全（"所有武器加 300 子弹"）
+  for (const id of WEAPON_ORDER) {
+    if (p.owned && p.owned[id]) continue;
+    p.owned = p.owned || {};
+    p.owned[id] = true;
+    const w = weaponOf(id);
+    p.ammo = p.ammo || {};
+    p.ammo[id] = { mag: w.magSize ?? 12, reserve: GOD_EXTRA_AMMO };
+    weapons += 1;
+  }
+  p.reloadUntil = 0;          // 立即结束换弹，状态干净
+  send(p.ws, {
+    t: 'god', active: true, until, seconds: secs,
+    extraAmmo: GOD_EXTRA_AMMO, weapons,
+  });
+  if (isMain) console.log('[cmd] GOD ' + p.name + '：全武器 +' + GOD_EXTRA_AMMO + ' 发，无敌 ' + secs + 's');
+  return {
+    ok: true, action: 'god', until, seconds: secs, weapons,
+    msg: 'GOD 已开启：全部武器补满并 +' + GOD_EXTRA_AMMO + ' 发，无敌 ' + secs + ' 秒',
+  };
+}
+
+// 全局昼夜状态（所有客户端共享）：'day' | 'dark'
+const worldEnv = { mode: 'day', changedAt: 0, by: null };
+
+function cmdEnv(mode, byName) {
+  const m = mode === 'dark' ? 'dark' : mode === 'light' ? 'day' : null;
+  if (!m) return { ok: false, msg: '用法：/dark（黑夜）或 /light（白天）' };
+  worldEnv.mode = m;
+  worldEnv.changedAt = Date.now();
+  worldEnv.by = byName || null;
+  broadcast({ t: 'env', mode: m, by: byName || null, at: worldEnv.changedAt });
+  if (isMain) console.log('[cmd] 环境切换为 ' + (m === 'dark' ? '黑夜' : '白天') + '（' + (byName || '?') + '）');
+  return {
+    ok: true, action: 'env', mode: m,
+    msg: m === 'dark' ? '已切换到黑夜' : '已切换到白天',
+  };
+}
+
 function cmdAddBot(countArg, kindArg, teamArg) {
   const kind = String(kindArg || '').toLowerCase();
   if (kind && kind !== 'ai' && kind !== 'bot') {
@@ -2136,6 +2211,12 @@ wss.on('connection', (ws) => {
           result = cmdAddBot(parts[0], parts[1], parts[2]);
         } else if (cmd === 'bots') {
           result = { ok: true, action: 'info', bots: countBots(), msg: '当前 AI ' + countBots() + ' 个' };
+        } else if (cmd === 'god') {
+          result = cmdGod(player, parts[0]);
+        } else if (cmd === 'dark' || cmd === 'light') {
+          result = cmdEnv(cmd, player.name);
+        } else if (cmd === 'env') {
+          result = { ok: true, action: 'info', mode: worldEnv.mode, msg: '当前环境：' + (worldEnv.mode === 'dark' ? '黑夜' : '白天') };
         } else {
           result = { ok: false, msg: cmd ? '未知命令 /' + cmd : '空命令' };
         }

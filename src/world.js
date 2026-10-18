@@ -115,6 +115,9 @@ export function buildWorld(scene, renderer, opts = {}) {
     const camera = ctx.camera || lastCamera;
     if (camera) lastCamera = camera;
 
+    // 昼夜过渡
+    updateEnv(step);
+
     // 太阳阴影相机跟随玩家（按阴影纹素对齐，避免抖动）
     const target = resolveTargetPos(ctx);
     lighting.update(step, target);
@@ -138,6 +141,101 @@ export function buildWorld(scene, renderer, opts = {}) {
     } else {
       renderer.render(scene, lastCamera);
     }
+  }
+
+  // ---------- 昼夜切换（/dark 黑夜、/light 白天）----------
+  // 白天/黑夜两套参数，平滑过渡（t: 0=白天 1=黑夜）
+  const DAY = {
+    exposure: SUN.exposure ?? 1.0,
+    sun: SUN.intensity ?? 2.7,
+    sunColor: new THREE.Color(SUN.color ?? 0xfff2d6),
+    hemiSky: new THREE.Color(SUN.hemiSky ?? 0xbcd6f0),
+    hemiGround: new THREE.Color(SUN.hemiGround ?? 0x6d6a52),
+    hemi: SUN.hemiIntensity ?? 1.0,
+    fill: 0.22,
+    fog: new THREE.Color(SUN.fogColor ?? 0xc6d7e4),
+    zenith: new THREE.Color(0x4c80b8),
+    horizon: new THREE.Color(0xc6d7e4),
+    haze: new THREE.Color(0xe9dcc2),
+    ground: new THREE.Color(0x6d6a52),
+    sunSprite: new THREE.Color(0xffedcd),
+    skyIntensity: 1.0,
+  };
+  const NIGHT = {
+    exposure: 0.86,
+    sun: 0.30,
+    sunColor: new THREE.Color(0x9fb6d8),
+    hemiSky: new THREE.Color(0x22304a),
+    hemiGround: new THREE.Color(0x0d1119),
+    hemi: 0.42,
+    fill: 0.06,
+    fog: new THREE.Color(0x0a1220),
+    zenith: new THREE.Color(0x050a16),
+    horizon: new THREE.Color(0x121c2e),
+    haze: new THREE.Color(0x1a2438),
+    ground: new THREE.Color(0x090c12),
+    sunSprite: new THREE.Color(0x9fb6d8),
+    skyIntensity: 0.18,
+  };
+  let envMode = 'day';
+  let envT = 0;          // 0 = 白天，1 = 黑夜
+  const _c1 = new THREE.Color();
+  function applyEnv(t) {
+    const lerp = THREE.MathUtils.lerp;
+    if (renderer) renderer.toneMappingExposure = lerp(DAY.exposure, NIGHT.exposure, t);
+    const sun = lighting.sun;
+    const hemi = lighting.hemi;
+    const fill = lighting.fill;
+    if (sun) {
+      sun.intensity = lerp(DAY.sun, NIGHT.sun, t);
+      _c1.copy(DAY.sunColor).lerp(NIGHT.sunColor, t);
+      sun.color.copy(_c1);
+    }
+    if (hemi) {
+      hemi.intensity = lerp(DAY.hemi, NIGHT.hemi, t);
+      _c1.copy(DAY.hemiSky).lerp(NIGHT.hemiSky, t);
+      hemi.color.copy(_c1);
+      _c1.copy(DAY.hemiGround).lerp(NIGHT.hemiGround, t);
+      hemi.groundColor.copy(_c1);
+    }
+    if (fill) fill.intensity = lerp(DAY.fill, NIGHT.fill, t);
+    if (lighting.fog) {
+      _c1.copy(DAY.fog).lerp(NIGHT.fog, t);
+      lighting.fog.color.copy(_c1);
+      if (scene.fog && scene.fog.color) scene.fog.color.copy(_c1);
+      if (scene.background && scene.background.isColor) scene.background.copy(_c1);
+    }
+    const u = sky.skyMat && sky.skyMat.uniforms;
+    if (u) {
+      if (u.uZenith) u.uZenith.value.copy(DAY.zenith).lerp(NIGHT.zenith, t);
+      if (u.uHorizon) u.uHorizon.value.copy(DAY.horizon).lerp(NIGHT.horizon, t);
+      if (u.uHaze) u.uHaze.value.copy(DAY.haze).lerp(NIGHT.haze, t);
+      if (u.uGround) u.uGround.value.copy(DAY.ground).lerp(NIGHT.ground, t);
+      if (u.uSunColor) u.uSunColor.value.copy(DAY.sunSprite).lerp(NIGHT.sunSprite, t);
+      if (u.uSunIntensity) u.uSunIntensity.value = lerp(DAY.skyIntensity, NIGHT.skyIntensity, t);
+    }
+    if (sky.sunSprite && sky.sunSprite.material) {
+      sky.sunSprite.material.opacity = lerp(1, 0.12, t);
+    }
+  }
+  function setEnv(mode, instant = false) {
+    const m = mode === 'dark' ? 'dark' : 'day';
+    envMode = m;
+    if (instant) {
+      envT = m === 'dark' ? 1 : 0;
+      applyEnv(envT);
+    }
+    return { mode: envMode, t: envT };
+  }
+  function updateEnv(dt) {
+    const target = envMode === 'dark' ? 1 : 0;
+    if (Math.abs(envT - target) < 0.001) {
+      if (envT !== target) { envT = target; applyEnv(envT); }
+      return;
+    }
+    const speed = 0.55;   // 约 1.8s 完成过渡
+    envT += Math.sign(target - envT) * Math.min(Math.abs(target - envT), dt * speed);
+    applyEnv(envT);
   }
 
   // ---------- 画质切换（植被密度 / 距离 / 阴影 / 后期 / 地形分辨率）----------
@@ -209,6 +307,9 @@ export function buildWorld(scene, renderer, opts = {}) {
     update,
     render,
     dispose,
+    setEnv,
+    get envMode() { return envMode; },
+    get envT() { return envT; },
     // 调试/自测：统计场景静态 draw call（按材质/对象数粗略估计）
     stats() {
       let meshes = 0, instanced = 0, lines = 0, triangles = 0;
@@ -234,6 +335,7 @@ export function buildWorld(scene, renderer, opts = {}) {
   // 首帧阴影/天空状态
   lighting.update(0, null);
   vegetation.update(0, null);
+  applyEnv(envT);
 
   return world;
 }

@@ -132,6 +132,7 @@ const state = {
   menuVisible: true, hudVisible: false,
   paused: false, dead: false, matchEnd: false, winner: null,
   warmupVisible: false, matchPhase: 'waiting', countdown: 0,
+  god: false, godLeft: 0,
   heading: 0,
   minimap: { x: 0, z: 0, yaw: 0, allies: [], enemies: [], zones: [], uav: false },
 };
@@ -716,6 +717,15 @@ export const hud = {
       wrap.classList.toggle('low', v / m <= 0.3);
       wrap.classList.toggle('critical', v / m <= 0.15);
     }
+  },
+  // GOD 无敌标记（顶部金色徽标 + 剩余秒数）
+  setGod(active, seconds) {
+    const el = node('godBadge');
+    if (!el) return;
+    state.god = !!active;
+    state.godLeft = Math.max(0, Math.round(num(seconds, 0)));
+    el.classList.toggle('hidden', !state.god);
+    if (state.god) setText(node('godLeft'), state.godLeft > 0 ? state.godLeft + 's' : '');
   },
   setShield(v0, max) {
     const m = num(max, state.shieldMax) || 100;

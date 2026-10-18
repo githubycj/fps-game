@@ -34,7 +34,7 @@ const HUD_METHODS = [
   'setScores', 'setZones', 'setTimer', 'setUav', 'setKills', 'setDeaths', 'setPing', 'setPlayers',
   'addKillFeed', 'addToast', 'setStreak',
   'showDeath', 'hideDeath', 'showPause', 'hidePause',
-  'showWarmup', 'hideWarmup', 'setCountdown', 'setMatchPhase',
+  'showWarmup', 'hideWarmup', 'setCountdown', 'setMatchPhase', 'setGod',
   'showMatchEnd', 'hideMatchEnd',
   'setMinimapState', 'setVisible', 'setStatus',
 ];
@@ -133,6 +133,9 @@ let shooting = false;
 let matchPhase = 'waiting';
 let matchCountdown = 0;
 let lastCountdownShown = -1;
+// GOD 无敌（本地计时，服务器权威判定伤害）
+let godUntil = 0;
+let godHudTick = 0;
 let pingSmoothed = 0;
 let elapsed = 0;
 let fpsEma = 0;
@@ -381,6 +384,12 @@ function updateLocalHud(me) {
   if (!me || !local) return;
   if (typeof me.hp === 'number') H.setHp(Math.max(0, Math.round(me.hp)), WORLD.maxHp);
   if (typeof me.shield === 'number') H.setShield(me.shield, 100);
+  // GOD 状态以服务器快照为准（god = 剩余毫秒）
+  if (typeof me.god === 'number') {
+    const left = Math.ceil(me.god / 1000);
+    if (left > 0) { godUntil = Date.now() + me.god; H.setGod(true, left); }
+    else if (godUntil) { godUntil = 0; H.setGod(false, 0); }
+  }
   if (typeof me.kills === 'number') H.setKills(me.kills);
   if (typeof me.deaths === 'number') H.setDeaths(me.deaths);
   H.setStance(local.stance);
@@ -659,23 +668,30 @@ function runCommand(text) {
   const { cmd, args } = parsed;
   if (cmd === 'help' || cmd === '?' || cmd === '') {
     cmdAppend('可用命令：', 'ok');
+    cmdAppend('/god [秒]        本人全武器 +300 发弹药 + 无敌（默认 120s）');
+    cmdAppend('/dark            切换黑夜');
+    cmdAppend('/light           切换白天');
     cmdAppend('/add 1 ai        增加 1 个 AI');
     cmdAppend('/add 3 ai        增加 3 个 AI');
     cmdAppend('/add -1 ai       减少 1 个 AI');
     cmdAppend('/add clear ai    清空所有 AI');
     cmdAppend('/add 1 ai alpha  友军 AI（默认 bravo 敌军）');
     cmdAppend('/bots            查看当前 AI 数量');
+    cmdAppend('/env             查看当前昼夜');
     return;
   }
-  if (cmd === 'add' || cmd === 'bots') {
+  if (cmd === 'add' || cmd === 'bots' || cmd === 'god' || cmd === 'dark' || cmd === 'light' || cmd === 'env') {
     if (cmd === 'add') {
       const count = args[0];
       const kind = args[1] || 'ai';
       if (count == null) { cmdAppend('用法：/add 1 ai  ·  /add -1 ai  ·  /add clear ai', 'err'); return; }
       cmdAppend('> /' + text.replace(/^\//, ''));
       net.send({ t: 'command', text: 'add ' + count + ' ' + kind + (args[2] ? ' ' + args[2] : '') });
+    } else if (cmd === 'god') {
+      cmdAppend('> /' + text.replace(/^\//, ''));
+      net.send({ t: 'command', text: 'god' + (args[0] ? ' ' + args[0] : '') });
     } else {
-      net.send({ t: 'command', text: 'bots' });
+      net.send({ t: 'command', text: cmd });
     }
     return;
   }
@@ -859,6 +875,10 @@ net.on('welcome', (m) => {
   H.setTimer(m.match && m.match.timeLeft);
   syncItems(m.items || []);
   applyMatchInfo(m.match);
+  // 同步全局昼夜（后加入的玩家也能看到当前是白天/黑夜）
+  if (m.env && m.env.mode) {
+    try { world.setEnv(m.env.mode === 'dark' ? 'dark' : 'day', true); } catch (err) { errors.push('env: ' + err.message); }
+  }
   // 等待阶段用"按空格开始"覆盖层；已有指针锁/进行中才显示暂停提示
   if (m.match && m.match.phase !== 'waiting' && m.match.phase !== 'countdown' && !deathVisible) {
     showPause('点击画面进入战斗');
@@ -886,6 +906,41 @@ net.on('command_result', (m) => {
   const msg = (m && m.msg) || '';
   cmdAppend(msg, m && m.ok ? 'ok' : 'err');
   H.addToast(msg);
+});
+
+// GOD 无敌开启（本地事件）
+net.on('god', (m) => {
+  godUntil = Date.now() + (m.seconds || 120) * 1000;
+  H.addToast('GOD 模式：无敌 ' + (m.seconds || 120) + ' 秒 · 全武器 +' + (m.extraAmmo || 300) + ' 发');
+  H.setGod(true, m.seconds || 120);
+  // 立刻刷新武器槽（服务器已把全部武器发给本人）
+  try { if (local) H.setWeaponSlots(local.owned, local.weapon, WEAPON_ORDER); } catch { /* ignore */ }
+});
+// GOD 挡下伤害时的轻微白闪（区别于正常受击红闪）
+function flashDamageLight() {
+  const el = document.getElementById('hitFlash') || document.getElementById('flash');
+  if (!el) return;
+  el.classList.remove('god-flash');
+  void el.offsetWidth;
+  el.classList.add('god-flash');
+  setTimeout(() => el.classList.remove('god-flash'), 420);
+}
+
+// GOD 挡下伤害（自己或看到别人挡下）
+net.on('god_block', (m) => {
+  if (m.self) {
+    H.addToast('无敌生效：伤害已免疫');
+    flashDamageLight();
+  } else {
+    H.addToast((m.targetName || '目标') + ' 处于无敌状态');
+  }
+});
+
+// 昼夜切换（服务器广播，所有客户端同步）
+net.on('env', (m) => {
+  const mode = m && m.mode === 'dark' ? 'dark' : 'day';
+  try { world.setEnv(mode); } catch (err) { errors.push('env: ' + err.message); }
+  H.addToast(mode === 'dark' ? '天黑了下来…' : '天亮了');
 });
 
 function remotesListForHud() {
@@ -1186,6 +1241,17 @@ function loop() {
         if (qualityLevel === 0 && fpsEma < 42 && world.setQuality) { world.setQuality('medium'); qualityLevel = 1; }
         else if (qualityLevel === 1 && fpsEma < 30 && world.setQuality) { world.setQuality('low'); qualityLevel = 2; }
       }
+    }
+  }
+
+  // GOD 剩余时间：每秒刷新一次 HUD，到点自动解除
+  if (godUntil > 0) {
+    godHudTick += dt;
+    if (godHudTick >= 0.5) {
+      godHudTick = 0;
+      const left = Math.max(0, Math.ceil((godUntil - Date.now()) / 1000));
+      if (left > 0) H.setGod(true, left);
+      else { godUntil = 0; H.setGod(false, 0); H.addToast('GOD 效果结束'); }
     }
   }
 
