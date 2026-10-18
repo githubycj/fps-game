@@ -621,6 +621,10 @@ function openCmd(prefill) {
   const box = document.getElementById('cmdBox');
   const input = document.getElementById('cmdInput');
   if (!box || !input) return;
+  // 防抖：短时间内重复呼出会反复释放指针锁，表现为"游戏失去控制"
+  const now = performance.now();
+  if (now - (openCmd._last || 0) < 250) return;
+  openCmd._last = now;
   box.classList.remove('hidden');
   if (typeof prefill === 'string') input.value = prefill;
   // 打开控制台时释放指针锁，否则无法输入
@@ -728,10 +732,14 @@ window.addEventListener('keypress', blockShortcuts, { capture: true });
 window.addEventListener('keydown', (e) => {
   const tag = (e.target && e.target.tagName) || '';
   if (tag === 'INPUT' || tag === 'TEXTAREA') return;      // 输入框内交给输入框处理
+  // 按住 Ctrl/Alt/Win 时绝不打开控制台：
+  // 否则玩家蹲下（Ctrl）时误触按键会弹出控制台 → 释放鼠标锁 + 暂停，表现得像"闪退"。
+  if (e.ctrlKey || e.altKey || e.metaKey) return;
+  if (e.repeat) return;
   if (e.code === 'Backquote' || (e.code === 'Enter' && !isCmdOpen())) {
     e.preventDefault();
     e.stopPropagation();
-    openCmd(e.code === 'Enter' ? '' : '');
+    openCmd('');
   }
 }, { capture: true });
 // Esc 会退出指针锁：拦截并锁定（游戏内不需要 Esc）
@@ -739,9 +747,26 @@ window.addEventListener('keydown', (e) => {
   if (isCmdOpen()) return;
   if (e.code === 'Escape') { e.preventDefault(); try { requestLock(); } catch { /* ignore */ } }
 }, { capture: true });
+// Ctrl / Alt / Meta 松开时必须清理按键状态：
+// 浏览器在焦点变化时可能只补发 keyup 的一部分，导致"以为还按着 Ctrl"而一直蹲下/锁定输入。
+function releaseModifiers() {
+  if (!local) return;
+  for (const code of ['ControlLeft', 'ControlRight', 'AltLeft', 'AltRight', 'MetaLeft', 'MetaRight',
+    'ShiftLeft', 'ShiftRight']) {
+    local.keys.delete(code);
+  }
+}
+window.addEventListener('keyup', (e) => {
+  if (e.code === 'ControlLeft' || e.code === 'ControlRight' ||
+      e.code === 'AltLeft' || e.code === 'AltRight' || e.code === 'MetaLeft' || e.code === 'MetaRight') {
+    releaseModifiers();
+  }
+}, { capture: true });
 document.addEventListener('keyup', (e) => {
   if (e.code === 'Space' && local) local.jumpHeld = false;
   if (local) local.keys.delete(e.code);
+  // 松开 Ctrl 时兜底清掉所有修饰键，避免卡在蹲下状态
+  if (e.key === 'Control' || e.code === 'ControlLeft' || e.code === 'ControlRight' || e.code === '') releaseModifiers();
 });
 window.addEventListener('blur', () => {
   if (local) { local.keys.clear(); local.jumpHeld = false; local.aiming = false; }
