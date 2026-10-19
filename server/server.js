@@ -1201,31 +1201,16 @@ function handleShoot(p, msg = {}) {
   return true;
 }
 
-// AI 开火请求：走与真人相同的权威校验
-// 同帧限流：同一帧最多允许 BOT_FIRE_PER_FRAME 个 AI 开火，其余顺延到下一帧，
-// 避免"多个 AI 同时开火"瞬间产生大量子弹/命中特效/枪声音效导致客户端掉帧。
-const BOT_FIRE_PER_FRAME = 1;
-let botFireFrame = -1;
-let botFireCount = 0;
+// AI 开火请求：走与真人相同的权威校验（射速/弹药由 handleShoot 统一把关）
+// 不再做"同帧限流"——那会让 AI 的连发被打断成断续单发。
+// 现在每个 AI 的射击间隔由 ai.js 的 burst 节奏 + 射速倍率决定，
+// 且各 AI 的决策子帧天然错开，不会出现同一帧齐射。
 function requestBotFire(bot, yaw, pitch) {
   if (!bot || !bot.alive) return false;
-  const now = Date.now();
-  if (botFireFrame !== now) { botFireFrame = now; botFireCount = 0; }
-  if (botFireCount >= BOT_FIRE_PER_FRAME) {
-    // 顺延：50~140ms 后由 AI 的 wantFire/fireAt 机制再次尝试
-    bot.fireAt = Math.max(bot.fireAt || 0, now + randInt(50, 140));
-    bot.fireYaw = typeof yaw === 'number' ? yaw : bot.yaw;
-    bot.firePitch = typeof pitch === 'number' ? pitch : bot.pitch;
-    return false;
-  }
-  botFireCount += 1;
-  const ok = handleShoot(bot, {
+  return handleShoot(bot, {
     yaw: typeof yaw === 'number' ? yaw : bot.yaw,
     pitch: typeof pitch === 'number' ? pitch : bot.pitch,
   });
-  // 开火后给这个 AI 一点随机抖动，避免所有人节奏同步
-  bot.nextFireAt = now + randInt(60, 180);
-  return ok;
 }
 
 // ============================================================
@@ -1597,11 +1582,52 @@ function canSee(bot, q) {
   return true;
 }
 
+// ============================================================
+// AI 小队战术配置
+// 每个小队按角色编成（突击/支援/狙击/侦察），角色决定：
+//   · 主武器（不同角色拿不同枪）
+//   · 交战距离偏好、点射长度、开火节奏、是否爱找掩体、是否绕侧
+// 队伍内会尽量覆盖多个角色，避免整队同质化。
+// ============================================================
+const AI_ROLES = {
+  assault: {
+    label: '突击手', weapon: 'smg',
+    preferRange: [6, 20], burstMin: 4, burstMax: 8, burstPause: [220, 420],
+    fireRate: 0.92, aggression: 1.0, coverBias: 0.35, flankBias: 0.5, aimError: 1.0,
+  },
+  support: {
+    label: '支援手', weapon: 'ak47',
+    preferRange: [10, 32], burstMin: 3, burstMax: 6, burstPause: [300, 560],
+    fireRate: 0.78, aggression: 0.85, coverBias: 0.6, flankBias: 0.3, aimError: 1.05,
+  },
+  marksman: {
+    label: '精确射手', weapon: 'ak47',
+    preferRange: [24, 52], burstMin: 1, burstMax: 3, burstPause: [520, 900],
+    fireRate: 0.62, aggression: 0.55, coverBias: 0.85, flankBias: 0.2, aimError: 0.72,
+  },
+  scout: {
+    label: '侦察兵', weapon: 'shotgun',
+    preferRange: [3, 12], burstMin: 2, burstMax: 4, burstPause: [380, 700],
+    fireRate: 0.8, aggression: 1.15, coverBias: 0.3, flankBias: 0.9, aimError: 1.15,
+  },
+};
+const AI_ROLE_ORDER = ['assault', 'support', 'marksman', 'scout'];
+// 每队已分配的角色计数（保证一队里角色尽量不重复）
+const teamRoleCursor = { alpha: 0, bravo: 0 };
+
+function nextRoleFor(team) {
+  const cur = teamRoleCursor[team] || 0;
+  teamRoleCursor[team] = (cur + 1) % AI_ROLE_ORDER.length;
+  return AI_ROLE_ORDER[cur % AI_ROLE_ORDER.length];
+}
+
 // 创建 AI（默认敌军；team 支持 alpha/bravo 与旧名 ally/enemy）
-function createBot(teamArg) {
+function createBot(teamArg, roleArg) {
   const team = normalizeTeam(teamArg);
   const spawn = freeSpawn(team);
-  const primary = AI_WEAPON_POOL[(botSeq - 1) % AI_WEAPON_POOL.length] || 'smg';
+  const role = AI_ROLES[roleArg] ? roleArg : nextRoleFor(team);
+  const roleCfg = AI_ROLES[role] || AI_ROLES.assault;
+  const primary = roleCfg.weapon;
   const owned = { pistol: true };
   const ammo = {};
   for (const id of [primary, 'pistol']) {
@@ -1618,6 +1644,10 @@ function createBot(teamArg) {
     name: 'AI-' + (team === 'alpha' ? 'A' : 'B') + String(botSeq).padStart(2, '0'),
     team,
     color,
+    // 小队战术：角色 + 该角色的战斗参数（由 ai.js 读取）
+    role,
+    roleLabel: roleCfg.label,
+    tactic: roleCfg,
     x: spawn.x, y: heightAt(spawn.x, spawn.z), z: spawn.z,
     vy: 0, grounded: true,
     yaw: yawForSpawn(spawn), pitch: 0,
@@ -1942,8 +1972,8 @@ function aiUpdate(bot, now = Date.now(), ctxArg) {
 }
 
 // AI 决策循环：每 200ms 一次（spec §6.7）
-const AI_SLICE = 4;              // 把 AI 决策分散到 4 个子帧（20Hz tick → 每个 AI 约 5Hz 决策，仍是 200ms 级别）
-const AI_PER_FRAME_BUDGET = 3;   // 单帧最多跑 3 个 AI 决策
+const AI_SLICE = 4;              // 重决策（think）分摊到 4 个子帧，避免所有 AI 同帧思考造成尖峰
+const AI_PER_FRAME_BUDGET = 4;   // 单帧最多跑 4 个 AI 的重决策
 let aiFrameSeq = 0;
 function hashSlice(id) {
   const s = String(id || '');
@@ -1957,25 +1987,16 @@ function runAiTick(now = Date.now()) {
   const batch = aiNoiseEvents;
   aiNoiseEvents = [];
   const ctx = buildAiCtx(now, batch);
-  // 分摊 AI 决策：不再让所有 AI 在同一帧集中 think/开火。
-  // 每个 AI 按 id 哈希分到不同的子帧，配合 aiBudget 限制单帧最多处理个数，
-  // 避免"多个 AI 同时发现玩家 → 同一帧齐射"，这是团战掉帧的主因。
-  const bots = [];
-  for (const p of players.values()) if (p.bot && p.alive) bots.push(p);
-  if (!bots.length) return;
   const frame = (aiFrameSeq = (aiFrameSeq + 1) % AI_SLICE);
-  const due = [];
-  for (const bot of bots) {
+  // 注意：感知(sense)与开火(tryFire)必须每个 tick 都跑，否则 AI 无法连发；
+  // 只有开销大的“重决策”(think：A* 寻路/选点/选掩体) 才按子帧分摊。
+  for (const bot of players.values()) {
+    if (!bot.bot) continue;
     bot.lastInputAt = now;
+    if (!bot.alive) continue;
     const slice = bot.aiSlice != null ? bot.aiSlice : (bot.aiSlice = hashSlice(bot.id));
-    // 每帧只处理"轮到自己"的那一批 AI
-    if (slice === frame) due.push(bot);
-  }
-  let processed = 0;
-  for (const bot of due) {
-    if (processed >= AI_PER_FRAME_BUDGET) break;   // 超出预算留到下个切片
-    processed += 1;
-    aiUpdate(bot, now, ctx);
+    const heavyDue = slice === frame;
+    aiUpdate(bot, now, ctx, { heavy: heavyDue });
   }
 }
 

@@ -511,21 +511,6 @@ b { font-weight: 700; }
   font-size: 8.5px;
   color: var(--sf-faint);
 }
-.pbar {
-  flex: none;
-  width: 36px;
-  height: 3px;
-  background: rgba(255, 255, 255, 0.09);
-  overflow: hidden;
-}
-.pbar i {
-  display: block;
-  height: 100%;
-  width: 0;
-  background: var(--sf-hp);
-  transition: width 0.2s linear;
-}
-.pbar i.dead { background: #6b3c32; }
 
 /* ---------- 6. 顶部中央：罗盘 / 比分 / 据点 ---------- */
 #hudTop {
@@ -1732,8 +1717,8 @@ b { font-weight: 700; }
 }
 .name-tag .dot { width: 6px; height: 6px; border-radius: 50%; }
 .name-tag .nm { max-width: 100px; overflow: hidden; text-overflow: ellipsis; }
-.name-tag .hpbar { width: 50px; height: 3px; background: rgba(255, 255, 255, 0.12); overflow: hidden; }
-.name-tag .hpbar i { display: block; height: 100%; width: 100%; background: var(--sf-hp); }
+/* 队友名字用队伍色，便于和敌人区分；血量条已整体移除（不暴露血量信息） */
+.name-tag .nm.mate { color: #9ec6e8; }
 .team-tag { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .team-tag.ally { background: var(--sf-alpha); }
 .team-tag.enemy { background: var(--sf-bravo); }

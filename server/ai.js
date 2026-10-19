@@ -388,7 +388,33 @@ function safeReset(bot) {
 
 function cfgFor(bot) {
   const c = bot && bot.aiConfig;
-  return c && typeof c === 'object' ? c : AI_CONFIG;
+  if (c && typeof c === 'object') return c;
+  // 小队角色战术：把角色参数叠加到基础配置上（点射长度/节奏/射速/交战距离/瞄头概率）
+  const base = AI_CONFIG;
+  const t = bot && bot.tactic;
+  if (!t || typeof t !== 'object') return base;
+  const merged = {
+    ...base,
+    burstMin: num(t.burstMin, num(base.burstMin, 3)),
+    burstMax: num(t.burstMax, num(base.burstMax, 6)),
+    fireRateMultiplier: num(t.fireRate, num(base.fireRateMultiplier, 0.7)),
+    aimErrorMin: num(base.aimErrorMin, 0.045) * num(t.aimError, 1),
+    aimErrorStart: num(base.aimErrorStart, 0.30) * num(t.aimError, 1),
+    coverHpFrac: num(base.coverHpFrac, 0.55) * num(t.coverBias, 1),
+    flankDistance: num(base.flankDistance, 11) * (0.7 + num(t.flankBias, 0.5) * 0.6),
+  };
+  if (Array.isArray(t.burstPause)) {
+    merged.burstPauseMin = num(t.burstPause[0], 220);
+    merged.burstPauseMax = num(t.burstPause[1], 520);
+  }
+  return merged;
+}
+
+// 角色偏好的交战距离（用于选目标与站位；取中点）
+function rolePreferredRange(bot) {
+  const t = bot && bot.tactic;
+  if (!t || !Array.isArray(t.preferRange)) return null;
+  return { min: num(t.preferRange[0], 6), max: num(t.preferRange[1], 30) };
 }
 
 function ammoFor(bot) {
@@ -987,7 +1013,9 @@ function think(bot, brain, now, ctx, cfg) {
       }
     }
     const wi = weaponInfo(bot.weapon);
-    const pref = PREF_RANGE[wi.kind] || [8, 22];
+    // 交战距离：优先用「小队角色」的偏好区间，没有角色配置时退回武器默认
+    const roleRange = rolePreferredRange(bot);
+    const pref = roleRange ? [roleRange.min, roleRange.max] : (PREF_RANGE[wi.kind] || [8, 22]);
     brain.wantAim = tgtDist > 6;
     if (brain.inCover) {
       // 掩体后：蹲/探头节奏；蹲下时不开枪
@@ -1144,13 +1172,37 @@ function requestReload(bot, brain, now, ctx) {
 
 // ============================================================
 // 执行（每次 aiUpdate 都跑）：转向限速 / 移动输入 / 卡住检测 / 开火节奏
+// fireOnly=true 时只做「瞄准 + 开火」（用于子帧之间的轻量帧，保证连发不断档），
+// 跳过寻路推进与卡住检测，避免每 tick 都跑 A*。
 // ============================================================
-function act(bot, brain, now, ctx, cfg) {
+function act(bot, brain, now, ctx, cfg, opts) {
+  const fireOnly = !!(opts && opts.fireOnly);
   const W = worldCfg(ctx);
   const nav = navFor(ctx);
   const dt = clamp(brain.dt, 0.001, 0.5);
   bot.wantFire = false;
   bot.wantReload = brain.wantReload;
+
+  if (fireOnly) {
+    // 轻量帧：沿用上一帧的移动输入，只刷新朝向与开火
+    let desiredYaw = Number.isFinite(brain.desiredYaw) ? brain.desiredYaw : bot.yaw;
+    let desiredPitch = 0;
+    if (brain.tgtVisible) {
+      const aim = aimPoint(bot, brain, W);
+      desiredYaw = angleTo(aim.x - bot.x, aim.z - bot.z);
+      const dx = aim.x - bot.x, dz = aim.z - bot.z;
+      const dy = aim.y - eyeInfo(bot, W, ctx).y;
+      desiredPitch = clamp(Math.atan2(dy, Math.max(0.3, Math.hypot(dx, dz))), -1.2, 1.2);
+    }
+    const turnRate = num(cfg.turnRate, 3.4);
+    const yawStep = turnRate * dt;
+    bot.yaw = wrapAngle(bot.yaw + clamp(wrapAngle(desiredYaw - bot.yaw), -yawStep, yawStep));
+    const pitchStep = num(cfg.turnAimRate, 2.6) * dt;
+    bot.pitch = clamp(bot.pitch + clamp(desiredPitch - bot.pitch, -pitchStep, pitchStep), -1.2, 1.2);
+    if (!bot.input) bot.input = {};
+    tryFire(bot, brain, now, ctx, cfg);
+    return;
+  }
 
   // ---- 移动方向（先算方向，再决定面朝敌人还是面朝行进方向）----
   let wx = 0, wz = 0, hasDir = false;
@@ -1415,7 +1467,7 @@ function tryFire(bot, brain, now, ctx, cfg) {
 // ============================================================
 // 入口
 // ============================================================
-export function aiUpdate(bot, now, ctx) {
+export function aiUpdate(bot, now, ctx, opts) {
   if (!bot || typeof bot !== 'object') return;
   // 死亡：清决策状态，等服务器重生
   if (bot.alive === false) {
@@ -1457,13 +1509,16 @@ export function aiUpdate(bot, now, ctx) {
     processEvents(bot, brain, t, ctx, cfg);
     checkHurt(bot, brain, t, ctx);
 
-    if (t >= brain.nextThink || brain.firstThink) {
+    // 重决策（A* 寻路 / 选点 / 选掩体）可以按子帧分摊；
+    // 但轻量级部分（感知 + 开火）必须每个 tick 都跑，否则 AI 打不出连发。
+    const wantHeavy = !opts || opts.heavy !== false;
+    if (wantHeavy && (t >= brain.nextThink || brain.firstThink)) {
       brain.firstThink = false;
       think(bot, brain, t, ctx, cfg);
       brain.nextThink = t + num(cfg.tickMs, 200) + randRange(ctx, -20, 20);
     }
 
-    act(bot, brain, t, ctx, cfg);
+    act(bot, brain, t, ctx, cfg, { fireOnly: !wantHeavy });
     brain.lastUpdate = t;
     // 供 HUD/调试读取（只写 brain 与约定字段）
     bot.targetId = brain.targetId;

@@ -163,11 +163,15 @@ const hex = (c) => '#' + Number(c || 0x888888).toString(16).padStart(6, '0');
 const esc = (s) => String(s).replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
 const v3 = (p) => new THREE.Vector3(p.x, p.y, p.z);
 
-// 名称标签用的简易血量条
-function labelHTML(name, color, bot, team) {
-  return `<span class="dot" style="background:${hex(color)}"></span><span class="nm">${esc(name)}</span>` +
-    (bot ? '<span class="ai-tag">AI</span>' : '') +
-    `<span class="hpbar"><i style="width:100%"></i></span>`;
+// 头顶名牌：
+//  · 敌人（含 AI）：只显示名字（+ AI 标记），不显示血量条 —— 血量是战术信息，不该白送
+//  · 队友：只显示名字，同样不显示血量条
+//  · 自己队伍里的 AI 也不显示血条
+function labelHTML(name, color, bot, team, myTeam) {
+  const isMate = team && myTeam && team === myTeam;
+  return `<span class="dot" style="background:${hex(color)}"></span>` +
+    `<span class="nm${isMate ? ' mate' : ''}">${esc(name)}</span>` +
+    (bot ? '<span class="ai-tag">AI</span>' : '');
 }
 
 // ---------- 远程玩家 ----------
@@ -188,7 +192,7 @@ function createRemote(p) {
 
   const label = document.createElement('div');
   label.className = 'name-tag';
-  label.innerHTML = labelHTML(p.name, p.color, p.bot, p.team);
+  label.innerHTML = labelHTML(p.name, p.color, p.bot, p.team, myTeam);
   const labelObj = new CSS2DObject(label);
   labelObj.position.set(0, 2.02, 0);
   group.add(labelObj);
@@ -284,17 +288,12 @@ function updateRemotes(dt) {
       hitAt: t.hitAt || 0,
     }, dt);
 
-    // 名牌：近距离显示；血量条同步
+    // 名牌：近距离显示；血量条已移除（不给敌人/队友暴露血量信息）
     if (r.labelObj) {
       const dx = r.group.position.x - camera.position.x;
       const dz = r.group.position.z - camera.position.z;
       const d2 = dx * dx + dz * dz;
       r.labelObj.visible = t.alive && d2 < 30 * 30;
-      if (t.hp !== r.lastLabelHp) {
-        const bar = r.label.querySelector('.hpbar i');
-        if (bar) bar.style.width = Math.max(0, Math.min(100, t.hp)) + '%';
-        r.lastLabelHp = t.hp;
-      }
     }
 
     // 狙击镜反光：开镜的狙击手会有镜片闪光（真实感 + 反制信息）
@@ -1450,6 +1449,8 @@ window.__game = {
   send: (msg) => net.send(msg),
   get started() { return started; },
   get local() { return local; },
+  // 远程玩家（含 AI）状态表，供调试/自动化读取名牌等信息
+  get remotes() { return remotes; },
   get player() {
     if (!local) return null;
     return {

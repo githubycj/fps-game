@@ -1044,8 +1044,7 @@ export const hud = {
           '<span class="pteam"></span>' +
           '<span class="pname"></span>' +
           '<span class="ai-tag hidden">AI</span>' +
-          '<span class="pkd mono"></span>' +
-          '<span class="pbar"><i></i></span>';
+          '<span class="pkd mono"></span>';
         row = {
           el,
           dot: el.querySelector('.pdot'),
@@ -1053,7 +1052,6 @@ export const hud = {
           name: el.querySelector('.pname'),
           ai: el.querySelector('.ai-tag'),
           kd: el.querySelector('.pkd'),
-          bar: el.querySelector('.pbar i'),
         };
         rows.set(p.id, row);
         root.appendChild(el);
@@ -1070,10 +1068,7 @@ export const hud = {
       row.ai.classList.toggle('hidden', !p.bot);
       const kd = (p.kills != null || p.deaths != null) ? Math.round(num(p.kills, 0)) + '/' + Math.round(num(p.deaths, 0)) : '';
       setText(row.kd, kd);
-      const maxHp = num(p.maxHp, WORLD_SAFE.maxHp || 100);
-      const hp = clamp(num(p.hp, maxHp), 0, maxHp);
-      setStyle(row.bar, 'width', (hp / maxHp * 100).toFixed(1) + '%');
-      row.bar.classList.toggle('dead', p.alive === false);
+      // 血量条已移除：不向玩家暴露他人血量（仅保留存活/阵亡状态用于灰显）
       row.el.classList.toggle('dead', p.alive === false);
       row.el.classList.toggle('enemy', team === 'bravo');
       row.el.classList.toggle('ally', team === 'alpha');
