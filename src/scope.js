@@ -177,7 +177,38 @@ export class ScopeController {
 
   register(kind, group) {
     this.guns[kind] = group;
+    this._bindOptics(group);
     if (!this.active) this.setWeapon(kind);
+  }
+
+  // 把光学 shader 绑定到镜片平面（RDS 类瞄具）
+  _bindOptics(group) {
+    const lens = group && group.userData ? group.userData.redDot : null;
+    if (!lens || !lens.userData || !lens.userData.isOpticLens) return;
+    if (!this.optics) return;
+    // 不能直接 clone()：three 的 cloneUniforms 会拒绝克隆 RenderTarget 纹理，导致镜片全黑。
+    // 这里手工构造材质，共享同一张场景贴图，但每个瞄具拥有独立的 uniform 值。
+    const src = this.optics.material;
+    const hex = lens.userData.reticleColor;
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {
+        uScene: { value: this.optics.rt.texture },
+        uOpacity: { value: 0 },
+        uAspect: { value: 1 },
+        uReticleColor: { value: new THREE.Color(typeof hex === 'number' ? hex : 0xff3b2a) },
+        uBarrel: { value: src.uniforms.uBarrel.value },
+        uSoftness: { value: src.uniforms.uSoftness.value },
+      },
+      vertexShader: src.vertexShader,
+      fragmentShader: src.fragmentShader,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      side: THREE.DoubleSide,
+      toneMapped: true,
+    });
+    lens.material.dispose();
+    lens.material = mat;
   }
 
   setWeapon(kind) {
@@ -287,9 +318,22 @@ export class ScopeController {
     if (this._arms) this._arms.group.visible = armsOn;
     if (armsOn) this._updateArms(gun);
 
-    // 红点：仅在开镜时可见（其余时间保留镜片暗玻璃，避免穿帮）
+    // 光学镜片：开镜量决定不透明度；镜片随开镜略微放大、更贴近眼睛（凑近镜筒的真实感）
     const dot = gun.userData.redDot;
-    if (dot) dot.visible = ads > 0.12 && !this.scopeActive;
+    if (dot) {
+      dot.visible = ads > 0.02 && !this.scopeActive;
+      if (dot.userData && dot.userData.isOpticLens) {
+        // 镜片在枪体 local 坐标中贴到镜框上，并用 ads 控制透明度
+        const mat = dot.material;
+        if (mat && mat.uniforms && mat.uniforms.uOpacity) {
+          mat.uniforms.uOpacity.value = Math.min(1, Math.max(0, (ads - 0.05) / 0.85));
+        }
+        // 镜片直径随开镜轻微放大（10%），更接近"把眼睛凑到目镜后"的观感
+        const baseR = dot.userData.lensRadius || 0.011;
+        dot.scale.setScalar(1 + ads * 0.12);
+        void baseR;
+      }
+    }
 
     return { visible: gun.visible, scopeActive: this.scopeActive, ads };
   }

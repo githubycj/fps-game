@@ -543,21 +543,23 @@ function buildSmg(b) {
   b.box(0.004, 0.005, 0.004, [0, 0.135, 0.012], 'metal', COL.steelBlack);
 
   // 红点镜（micro red dot：镜座 / 镜框 / 镜片 / 旋钮 / 电池仓）
-  // 镜框只保留上下两条 + 四个角柱，中间完全镂空——玩家透过镜片能直接看到准星与目标
+  // 镜框：圆形全环镜筒（浮点式红点外形），中间完全通透，光学镜片填满内圈
   b.box(0.026, 0.010, 0.048, [0, 0.1265, -0.095], 'metal', COL.steelDark);
   b.cylX(0.004, 0.030, [0, 0.121, -0.075], 'metal', COL.steelWorn);
   b.rbox(0.030, 0.020, 0.036, 0.004, [0, 0.132, -0.095], 'polymer', COL.polymerBlack, null, true);
-  b.box(0.034, 0.0045, 0.006, [0, 0.1735, -0.095], 'polymer', COL.polymerBlack);
-  b.box(0.034, 0.0045, 0.006, [0, 0.1245, -0.095], 'polymer', COL.polymerBlack);
-  for (const sx of [-1, 1]) b.box(0.0045, 0.053, 0.006, [sx * 0.0168, 0.149, -0.095], 'polymer', COL.polymerBlack);
-  for (const z of [-0.121, -0.069]) b.torus(0.0125, 0.0024, [0, 0.149, z], 'metal', COL.steelDark);
-  // 镜片：极淡抗反射镀膜（几乎透明），避免挡住视线
-  b.box(0.024, 0.050, 0.0012, [0, 0.149, -0.120], 'glass', COL.glass);
-  b.box(0.022, 0.048, 0.0012, [0, 0.149, -0.070], 'glass', COL.glass);
-  b.cylY(0.0075, 0.014, [0, 0.176, -0.095], 'metal', COL.steelWorn, 12);
-  b.cylY(0.0055, 0.006, [0, 0.185, -0.095], 'metal', COL.steelDark, 12);
-  b.cylX(0.0075, 0.014, [0.0175, 0.149, -0.095], 'metal', COL.steelWorn, 12);
-  b.cylX(0.006, 0.010, [-0.0175, 0.149, -0.100], 'metal', COL.steelDark, 12);
+  // 上下两条横梁 + 左右两根细立柱（形成矩形外框）
+  b.box(0.040, 0.0045, 0.008, [0, 0.1775, -0.095], 'polymer', COL.polymerBlack);
+  b.box(0.040, 0.0045, 0.008, [0, 0.1205, -0.095], 'polymer', COL.polymerBlack);
+  for (const sx of [-1, 1]) b.box(0.0045, 0.061, 0.008, [sx * 0.0198, 0.149, -0.095], 'polymer', COL.polymerBlack);
+  // 镜筒前端/后端圆环（托住光学镜片，形成真实镜筒观感）
+  for (const z of [-0.120, -0.070]) b.torus(0.0175, 0.0026, [0, 0.149, z], 'metal', COL.steelDark);
+  // 镜片玻璃（真实光学镜片由 optics shader 绘制，这里保留一层极淡的镀膜底色）
+  b.box(0.031, 0.054, 0.0010, [0, 0.149, -0.119], 'glass', COL.glass);
+  b.box(0.029, 0.052, 0.0010, [0, 0.149, -0.071], 'glass', COL.glass);
+  b.cylY(0.0075, 0.014, [0, 0.182, -0.095], 'metal', COL.steelWorn, 12);
+  b.cylY(0.0055, 0.006, [0, 0.191, -0.095], 'metal', COL.steelDark, 12);
+  b.cylX(0.0075, 0.014, [0.0225, 0.149, -0.095], 'metal', COL.steelWorn, 12);
+  b.cylX(0.006, 0.010, [-0.0225, 0.149, -0.100], 'metal', COL.steelDark, 12);
 
   // 握把（含防滑纹）
   b.rbox(0.046, 0.095, 0.052, 0.010, grip, 'polymer', COL.polymerBlack, [A, 0, 0], true);
@@ -623,7 +625,8 @@ function buildSmg(b) {
     rightGrip: [0, -0.016, 0.042],
     leftGrip: [0, 0.038, -0.365],
     boltAxis: null,
-    sprite: { color: COL.dotRed, size: 0.022, position: [0, 0.149, -0.118] },
+    // 光学镜片：直径 0.042（≈42mm 真实红点窗），放在靠近眼睛的后端环内
+    sprite: { color: COL.dotRed, size: 0.042, position: [0, 0.149, -0.072] },
   };
 }
 
@@ -1105,32 +1108,27 @@ const dotMatCache = new Map();
  * @returns {THREE.Sprite}
  */
 export function makeRedDotSprite(color = COL.dotRed, size = 0.010) {
-  const key = `${color}`;
-  let material = dotMatCache.get(key);
-  if (!material) {
-    material = new THREE.SpriteMaterial({
-      map: getDotTexture(),
-      color,
-      blending: THREE.AdditiveBlending,
-      transparent: true,
-      depthWrite: false,
-      depthTest: true,
-      toneMapped: false,
-      sizeAttenuation: true,
-    });
-    dotMatCache.set(key, material);
-  }
-  // 注意：红点 sprite 的材质在缓存中共享，depthTest=false 对所有红点生效（开镜时才会显示）
-  material.depthTest = false;
-  // 透明物体（含 sprite）默认在不透明物体之后绘制；这里给更高 renderOrder 保证
-  // 红点一定画在镜片/镜框之后，不会被半透明镜片盖掉。
-  material.depthWrite = false;
-  const sprite = new THREE.Sprite(material);
-  sprite.scale.set(size, size, 1);
-  sprite.renderOrder = 1200;
-  sprite.frustumCulled = false;
-  sprite.name = 'redDotSprite';
-  return sprite;
+  // 真实光学瞄具：镜片是一块圆形平面，由 optics.js 的光学 shader 逐像素显示
+  // （独立相机渲染的镜内画面 + 桶形畸变 + 边缘色散 + 光学分划），
+  // 不再使用"红点贴图 sprite"。size 作为镜片直径。
+  const radius = Math.max(0.004, size * 0.5);
+  const geo = new THREE.CircleGeometry(radius, 48);
+  // 平面的显式材质，单位矩阵占位；真正的 shader 由 optics 绑定
+  const material = new THREE.MeshBasicMaterial({
+    color: 0xffffff, transparent: true, opacity: 0, depthWrite: false, depthTest: true,
+    toneMapped: false, side: THREE.DoubleSide,
+  });
+  material.userData.isLens = true;
+  dotMatCache.set(`${color}|${size}`, material);
+  const mesh = new THREE.Mesh(geo, material);
+  // 透明物体中最后绘制（高于枪身、低于 HUD），确保镜片画面不被枪身遮住
+  mesh.renderOrder = 900;
+  mesh.frustumCulled = false;
+  mesh.name = 'redDotSprite';        // 保持既有命名，scope.js 兼容
+  mesh.userData.isOpticLens = true;
+  mesh.userData.reticleColor = color;
+  mesh.userData.lensRadius = radius;
+  return mesh;
 }
 
 /** 开关红点 sprite（Lead 在非开镜/切枪时可关闭） */

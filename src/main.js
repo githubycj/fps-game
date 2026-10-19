@@ -9,6 +9,7 @@ import { Net, wsUrl } from './net.js';
 import { buildWorld } from './world.js';
 import { LocalPlayer, BASE_FOV } from './player.js';
 import { ScopeController } from './scope.js';
+import { createOptics } from './optics.js';
 import { Effects } from './effects.js';
 import { initAudio, sfx, setAudioListener, startAmbience, stopAmbience } from './audio.js';
 import { createCharacter } from './models/character.js';
@@ -107,7 +108,10 @@ document.body.appendChild(labelRenderer.domElement);
 
 // ---------- 第一人称武器 ----------
 const gunModels = {};
+// 真实光学瞄具：独立相机把场景渲染到贴图，镜片 shader 显示放大画面 + 畸变 + 分划
+const optics = createOptics(renderer, scene);
 const scope = new ScopeController(camera);
+scope.optics = optics;
 for (const id of WEAPON_ORDER) {
   const g = createWeaponModel(id, { firstPerson: true });
   // 第一人称视图模型整体再缩一档，避免枪身占屏过大（模型模块给的是枪械真实比例）
@@ -1307,6 +1311,13 @@ function loop() {
       s.group.position.y = s.baseY + 0.08 + Math.sin(s.bob) * 0.06;
       s.group.rotation.y += dt * 1.1;
     }
+  }
+
+  // 真实光学：开镜时先用光学相机把场景（去掉第一人称手臂/武器）渲染到镜片贴图。
+  // 光学相机的 FOV 必须与主相机一致，这样镜片显示的就是"同一视野的放大像"，
+  // 中心点与准星严格对应，弹着点不受镜片影响；畸变只作用在镜片内部像素上。
+  if (local && !scope.scopeActive && local.adsAmount > 0.02) {
+    try { optics.render(camera, camera.fov); } catch (e) { if (!loop._opticsErr) { loop._opticsErr = true; errors.push('optics: ' + e.message); } }
   }
 
   // 渲染（环境模块接管后期时走它的 render）
