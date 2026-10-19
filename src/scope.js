@@ -28,7 +28,7 @@ const ADS_CONFIG = {
   // 注意：不要把枪"怼到脸上"来放大镜片——那会让枪托/机匣穿过近裁剪面（看起来像穿模）。
   // 这里保持 0.24~0.26m 的真实眼距，靠"镜片本身做大 + 镜片内 PiP 放大"来获得大视野。
   pistol: { relief: 0.26, scale: 0.90 },
-  smg: { relief: 0.27, scale: 0.90 },
+  smg: { relief: 0.24, scale: 0.90 },
   ak47: { relief: 0.23, scale: 0.95 },
   shotgun: { relief: 0.26, scale: 0.90 },
   sniper: { relief: 0.24, scale: 0.90 },

@@ -542,42 +542,58 @@ function buildSmg(b) {
   b.cylX(0.012, 0.020, [0, 0.123, 0.012], 'metal', COL.steelDark);
   b.box(0.004, 0.005, 0.004, [0, 0.135, 0.012], 'metal', COL.steelBlack);
 
-  // ============ 大窗口全息/红点镜（抬高镜线，保证镜窗大且不穿模）============
-  // 镜窗中心 y=0.237，内窗 208×208mm，镜片直径 200mm。
-  // 放大只在镜片内部由 optics.js 的 PiP 渲染完成，镜片外视角保持原样。
-  // 底座：导轨夹块 + 前后夹紧螺丝
-  b.rbox(0.054, 0.030, 0.062, 0.005, [0, 0.104, -0.095], 'metal', COL.steelDark, null, true);
-  b.box(0.046, 0.008, 0.050, [0, 0.1215, -0.095], 'metal', COL.steelWorn);
-  b.cylX(0.0050, 0.060, [0, 0.108, -0.078], 'metal', COL.steelWorn);     // 横穿夹紧螺栓
-  b.cylX(0.0072, 0.010, [0, 0.108, 0.030], 'metal', COL.steelDark);      // 螺栓头
-  // 立柱：把镜窗从底座抬到瞄准高度（左右两根）
+  // ============ 圆筒式红点镜（Aimpoint Micro 风格，实体镜筒）============
+  // 结构：短镜筒（16 段圆周壳体）+ 前后加厚镜圈 + 中部加强环 + 顶部高低旋钮
+  //       + 右侧风偏旋钮 + 左侧电池仓 + 快拆座（QD 扳杆）+ 目镜喇叭口。
+  // 镜片 (y=0.215, z=-0.043)，直径 156mm，被镜筒自然形成视野边缘（真实光学的渐晕）。
+  // 镜内 2.2× 放大由 optics.js 的 PiP 完成，镜片外视角不变。
+  const OPT_Y = 0.215;
+  const OPT_R = 0.085;        // 镜筒外半径（170mm 直径）
+  const OPT_LEN = 0.060;      // 镜筒长度（短筒 micro 红点）
+  const OPT_Z = -0.095;       // 镜筒中点
+  const TUBE_IN = OPT_R - 0.007;   // 内半径 0.078
+  // 底座：导轨夹块 + 快拆扳杆 + 夹紧螺栓
+  b.rbox(0.050, 0.026, 0.074, 0.005, [0, 0.104, -0.095], 'metal', COL.steelDark, null, true);
+  b.box(0.042, 0.010, 0.066, [0, 0.1215, -0.095], 'metal', COL.steelWorn);
+  b.rbox(0.034, 0.028, 0.018, 0.004, [-0.038, 0.103, -0.095], 'metal', COL.steelDark, null, true);
+  b.box(0.009, 0.032, 0.024, [-0.053, 0.097, -0.095], 'metal', COL.steelWorn, [0, 0, 0.20]);
+  b.cylX(0.0040, 0.028, [0, 0.099, -0.126], 'metal', COL.steelWorn);
+  b.cylX(0.0060, 0.008, [0, 0.099, -0.143], 'metal', COL.steelDark);
+  // 立柱：底座 → 镜筒（左右两片）
   for (const sx of [-1, 1]) {
-    b.rbox(0.017, 0.124, 0.044, 0.005, [sx * 0.080, 0.180, -0.095], 'polymer', COL.polymerBlack, null, true);
-    b.box(0.004, 0.092, 0.006, [sx * 0.0900, 0.178, -0.095], 'polymer', COL.polymerBlack);
+    b.rbox(0.015, 0.058, 0.046, 0.004, [sx * 0.040, 0.156, -0.095], 'polymer', COL.polymerBlack, null, true);
+    b.box(0.004, 0.026, 0.018, [sx * 0.0485, 0.154, -0.095], 'metal', COL.steelDark);
   }
-  b.box(0.180, 0.011, 0.042, [0, 0.1245, -0.095], 'polymer', COL.polymerBlack);   // 底部横梁
-  // 镜窗外框（上下横梁 + 左右立柱），内窗 208×208mm
-  b.rbox(0.232, 0.012, 0.040, 0.004, [0, 0.3470, -0.095], 'polymer', COL.polymerBlack, null, true);
-  b.rbox(0.232, 0.012, 0.040, 0.004, [0, 0.1270, -0.095], 'polymer', COL.polymerBlack, null, true);
+  // 镜筒壳体：16 段圆周板拼成圆筒（外半径 0.085、壁厚 0.007、长 0.060）
+  const TUBE_N = 16;
+  {
+    const segW = 2 * OPT_R * Math.sin(Math.PI / TUBE_N) * 1.08;
+    for (let i = 0; i < TUBE_N; i++) {
+      const a = (i / TUBE_N) * Math.PI * 2;
+      const cx = Math.cos(a) * (OPT_R - 0.0035);
+      const cy = OPT_Y + Math.sin(a) * (OPT_R - 0.0035);
+      b.box(segW, 0.007, OPT_LEN, [cx, cy, OPT_Z], 'polymer', COL.polymerBlack, [0, 0, a]);
+    }
+  }
+  // 前后加厚镜圈（外扩，不侵入内径）+ 中部加强环 + 目镜喇叭口
+  b.torus(OPT_R + 0.0015, 0.0050, [0, OPT_Y, OPT_Z - OPT_LEN / 2], 'metal', COL.steelDark);
+  b.torus(OPT_R + 0.0015, 0.0055, [0, OPT_Y, OPT_Z + OPT_LEN / 2], 'metal', COL.steelDark);
+  b.torus(OPT_R + 0.0010, 0.0042, [0, OPT_Y, OPT_Z], 'metal', COL.steelWorn);
+  b.torus(OPT_R + 0.0035, 0.0045, [0, OPT_Y, OPT_Z + OPT_LEN / 2 + 0.007], 'polymer', COL.polymerBlack); // 目镜喇叭口
+  // 调节旋钮：顶部高低 + 右侧风偏 + 左侧电池仓
+  b.cylY(0.0145, 0.011, [0, OPT_Y + OPT_R + 0.004, OPT_Z], 'metal', COL.steelWorn, 16);
+  b.cylY(0.0160, 0.005, [0, OPT_Y + OPT_R + 0.011, OPT_Z], 'metal', COL.steelDark, 16);
+  b.cylY(0.0055, 0.004, [0, OPT_Y + OPT_R + 0.014, OPT_Z], 'metal', COL.steelWorn, 12);
+  b.cylX(0.0135, 0.011, [OPT_R + 0.003, OPT_Y, OPT_Z], 'metal', COL.steelWorn, 16);
+  b.cylX(0.0150, 0.005, [OPT_R + 0.010, OPT_Y, OPT_Z], 'metal', COL.steelDark, 16);
+  b.cylX(0.0140, 0.013, [-(OPT_R + 0.003), OPT_Y, OPT_Z], 'metal', COL.steelDark, 16);   // 电池仓
+  b.cylX(0.0090, 0.007, [-(OPT_R + 0.012), OPT_Y, OPT_Z], 'metal', COL.steelWorn, 16);
+  // 镜筒侧面固定螺丝 + 铭牌
   for (const sx of [-1, 1]) {
-    b.rbox(0.012, 0.220, 0.040, 0.004, [sx * 0.1100, 0.237, -0.095], 'polymer', COL.polymerBlack, null, true);
+    b.sphere(0.0034, [sx * (OPT_R - 0.006), OPT_Y + 0.034, OPT_Z - 0.014], 'metal', COL.steelDark, 8);
+    b.sphere(0.0034, [sx * (OPT_R - 0.006), OPT_Y - 0.034, OPT_Z - 0.014], 'metal', COL.steelDark, 8);
   }
-  // 前遮阳檐 + 后侧遮光罩（真实全息镜的防眩光结构）
-  b.box(0.232, 0.007, 0.034, [0, 0.3515, -0.128], 'polymer', COL.polymerBlack);
-  b.box(0.232, 0.006, 0.016, [0, 0.1275, -0.128], 'polymer', COL.polymerBlack);
-  // 镜片压圈（内窗内侧一圈细框，视觉上"托住"镜片）
-  b.box(0.208, 0.005, 0.005, [0, 0.3390, -0.062], 'metal', COL.steelWorn);
-  b.box(0.208, 0.005, 0.005, [0, 0.1350, -0.062], 'metal', COL.steelWorn);
-  for (const sx of [-1, 1]) b.box(0.005, 0.190, 0.005, [sx * 0.1015, 0.237, -0.062], 'metal', COL.steelWorn);
-  // 调节旋钮：顶部风偏、右侧高低、左侧电池仓
-  b.cylY(0.0125, 0.016, [0, 0.3620, -0.095], 'metal', COL.steelWorn, 14);
-  b.cylY(0.0090, 0.007, [0, 0.3730, -0.095], 'metal', COL.steelDark, 14);
-  b.cylX(0.0120, 0.016, [0.1210, 0.237, -0.095], 'metal', COL.steelWorn, 14);
-  b.cylX(0.0085, 0.010, [0.1310, 0.237, -0.095], 'metal', COL.steelDark, 14);
-  b.cylX(0.0130, 0.014, [-0.1205, 0.237, -0.095], 'metal', COL.steelDark, 14);
-  // 侧面细节：铭牌 + 两颗固定螺丝
-  b.box(0.0016, 0.015, 0.048, [0.1160, 0.2850, -0.095], 'metal', COL.steelWorn);
-  for (const sx of [-1, 1]) b.sphere(0.0036, [sx * 0.1100, 0.3350, -0.113], 'metal', COL.steelDark, 8);
+  b.box(0.0016, 0.014, 0.026, [OPT_R - 0.003, OPT_Y, OPT_Z + 0.014], 'metal', COL.steelWorn);
 
   // 握把（含防滑纹）
   b.rbox(0.046, 0.095, 0.052, 0.010, grip, 'polymer', COL.polymerBlack, [A, 0, 0], true);
@@ -637,17 +653,17 @@ function buildSmg(b) {
 
   return {
     muzzle: [0, 0.078, -0.632],
-    // 镜线抬高到 0.237：为 200mm 大镜窗让出空间，同时靠加大眼距避免镜框/枪身穿模
-    sightPoint: [0, 0.237, -0.062],
+    // 圆筒红点镜：镜线 y=0.215，镜片贴在镜筒后端（贴近眼睛一侧）
+    sightPoint: [0, 0.215, -0.043],
     sightType: 'reddot',
     scopeLens: null,
     rightGrip: [0, -0.016, 0.042],
     leftGrip: [0, 0.038, -0.365],
     boltAxis: null,
-    // 光学镜片：直径 200mm，装在镜窗最后端（贴近眼睛的一侧）
-    sprite: { color: COL.dotRed, size: 0.200, position: [0, 0.237, -0.062] },
+    // 光学镜片：直径 156mm（塞满 170mm 镜筒的内径，避免边缘露缝）
+    sprite: { color: COL.dotRed, size: 0.156, position: [0, 0.215, -0.043] },
     // 镜片内放大倍率（PiP：只在镜片圆内放大，镜片外视角不变）
-    opticMagnification: 2.0,
+    opticMagnification: 2.2,
   };
 }
 
@@ -1123,24 +1139,48 @@ function getDotTexture() {
 const dotMatCache = new Map();
 
 /**
- * 生成一个红点/光点 Sprite（加法混合，可关闭）。
- * @param {number} color 颜色
- * @param {number} size  sprite 直径（local 单位，未缩放）
- * @returns {THREE.Sprite}
+ * 光学瞄具部件。
+ * - 大尺寸（≥0.05）→ 圆形光学镜片平面，由 optics.js 的 PiP shader 显示放大画面 + 红点；
+ * - 小尺寸（<0.05）→ 传统自发光 sprite（霰弹枪前准星珠等），保持原有发光观感。
+ * @param {number} color 分划/光点颜色
+ * @param {number} size  直径（local 单位，未缩放）
  */
 export function makeRedDotSprite(color = COL.dotRed, size = 0.010) {
-  // 真实光学瞄具：镜片是一块圆形平面，由 optics.js 的光学 shader 逐像素显示
-  // （独立相机渲染的镜内画面 + 桶形畸变 + 边缘色散 + 光学分划），
-  // 不再使用"红点贴图 sprite"。size 作为镜片直径。
+  if (size < 0.05) {
+    // 小光点：加法混合 sprite（准星珠 / 光纤点），不参与光学 PiP
+    const key = `sprite|${color}`;
+    let material = dotMatCache.get(key);
+    if (!material) {
+      material = new THREE.SpriteMaterial({
+        map: getDotTexture(),
+        color,
+        blending: THREE.AdditiveBlending,
+        transparent: true,
+        depthWrite: false,
+        depthTest: false,      // 准星珠必须可见，不被枪身遮挡
+        toneMapped: false,
+        sizeAttenuation: true,
+      });
+      dotMatCache.set(key, material);
+    }
+    const sprite = new THREE.Sprite(material);
+    sprite.scale.set(size, size, 1);
+    sprite.renderOrder = 1200;
+    sprite.frustumCulled = false;
+    sprite.name = 'redDotSprite';
+    return sprite;
+  }
+
+  // 大尺寸：圆形光学镜片平面（PiP 显示区）
   const radius = Math.max(0.004, size * 0.5);
-  const geo = new THREE.CircleGeometry(radius, 48);
-  // 平面的显式材质，单位矩阵占位；真正的 shader 由 optics 绑定
+  const geo = new THREE.CircleGeometry(radius, 56);
+  // 占位材质；真正的光学 shader 由 ScopeController 绑定
   const material = new THREE.MeshBasicMaterial({
     color: 0xffffff, transparent: true, opacity: 0, depthWrite: false, depthTest: true,
     toneMapped: false, side: THREE.DoubleSide,
   });
   material.userData.isLens = true;
-  dotMatCache.set(`${color}|${size}`, material);
+  dotMatCache.set(`lens|${color}|${size}`, material);
   const mesh = new THREE.Mesh(geo, material);
   // 透明物体中最后绘制（高于枪身、低于 HUD），确保镜片画面不被枪身遮住
   mesh.renderOrder = 900;
