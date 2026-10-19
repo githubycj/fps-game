@@ -66,6 +66,10 @@ const LENS_FRAG = `
     col.g = texture2D(uScene, uvG).g;
     col.b = texture2D(uScene, uvB).b;
 
+    // RT 用 SRGBColorSpace 存储（three 在 setRenderTarget 时会做 sRGB 编码），
+    // 这里采样拿到的已经是显示值，直接使用即可；不要再做 gamma 变换，否则会过曝。
+    // 之前发灰发绿的原因是纹理被标成 sRGB 但实际写入的是线性数据 —— 现在两边已对齐。
+
     // 镜片渐晕：只在最外圈轻微压暗，中心清晰
     col *= 1.0 - 0.22 * smoothstep(0.82, 1.02, r);
 
@@ -99,7 +103,9 @@ const LENS_FRAG = `
  * @param {THREE.Scene} scene
  */
 export function createOptics(renderer, scene) {
-  const size = 384;
+  // 高倍狙击（10×）镜内 FOV 低到 0.7°，画面被放得极大，需要足够分辨率。
+  // 768 在 1080p 下镜窗约 300px，有 2.5x 采样余量，放大后不会出现斜纹噪点。
+  const size = 768;
   const rt = new THREE.WebGLRenderTarget(size, size, {
     minFilter: THREE.LinearFilter,
     magFilter: THREE.LinearFilter,
@@ -108,9 +114,19 @@ export function createOptics(renderer, scene) {
     stencilBuffer: false,
     type: THREE.UnsignedByteType,
   });
-  if (rt.texture) rt.texture.colorSpace = THREE.SRGBColorSpace;
+  if (rt.texture) {
+    // three 渲染到 RenderTarget 时会按目标纹理的 colorSpace 做编码：
+    // 标成 sRGB → 写入的就是 sRGB 显示值，镜片 shader 可直接采样使用（与原红点镜一致）。
+    // 若标成 NoColorSpace 却仍按 sRGB 采样，就会整体发灰发绿并出现放射状色带。
+    rt.texture.colorSpace = THREE.SRGBColorSpace;
+    rt.texture.generateMipmaps = false;
+    rt.texture.minFilter = THREE.LinearFilter;
+    rt.texture.magFilter = THREE.LinearFilter;
+  }
 
-  const cam = new THREE.PerspectiveCamera(28, 1, 0.05, 400);
+  // 近裁剪面推到 0.5m：镜筒内壁/目镜离相机只有 6~10cm，如果 near 太近会被拍进镜内画面，
+  // 表现为镜片边缘出现一圈灰黑色的"管子内壁"和放射状条纹。
+  const cam = new THREE.PerspectiveCamera(28, 1, 0.5, 500);
   cam.rotation.order = 'YXZ';
 
   const material = new THREE.ShaderMaterial({
@@ -143,7 +159,8 @@ export function createOptics(renderer, scene) {
     // 跟随主相机的位置与朝向，只改 FOV
     cam.position.copy(camera.position);
     cam.rotation.copy(camera.rotation);
-    cam.fov = Math.max(6, Math.min(90, fovDeg || 28));
+    // 高倍狙击（10×）时镜内 FOV 只有 1.5° 左右，下限必须足够低，否则会被截断成"放大不够"
+    cam.fov = Math.max(0.6, Math.min(90, fovDeg || 28));
     cam.aspect = 1;
     cam.updateProjectionMatrix();
     cam.updateMatrixWorld();
@@ -157,8 +174,12 @@ export function createOptics(renderer, scene) {
     const prevShadowAuto = renderer.shadowMap ? renderer.shadowMap.autoUpdate : null;
     try {
       renderer.setRenderTarget(rt);
-      renderer.clear();
+      // 注意：不能调用 renderer.clear()，它会作用于"当前绑定的目标"，
+      // 一旦状态没恢复就会把主画布也清掉，表现为整屏黑闪。
       renderer.render(scene, cam);
+      // 渲染到 RT 后必须显式告知纹理已更新：否则下一帧主渲染可能读到未完成的写入，
+      // 表现为镜窗里出现撕裂的斜纹（一半正常一半错位）。
+      if (rt.texture) rt.texture.needsUpdate = true;
     } catch { /* 渲染失败时保持上一帧画面，不影响游戏 */ } finally {
       renderer.setRenderTarget(prevTarget);
       for (const h of hidden) h.visible = true;

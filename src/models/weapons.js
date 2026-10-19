@@ -922,28 +922,36 @@ function buildSniper(b) {
     b.torus(0.0245, 0.0045, [0, 0.170, rz], 'metal', COL.steelDark, null, true);
     for (const sx of [-1, 1]) addScrew(b, [sx * 0.014, 0.152, rz], { axis: 'y', r: 0.0028, len: 0.006 });
   }
-  // 6 倍狙击镜：镜筒 / 物镜铃 / 目镜 / 前后镜片 / 内壁 / 变倍环 / 调节旋钮
-  b.cylZ(0.0205, 0.250, [0, 0.170, -0.145], 'metal', COL.steelDark, 20);              // 镜筒
-  b.cylZ2(0.0290, 0.0210, 0.085, [0, 0.170, -0.310], 'metal', COL.steelDark, 20);     // 物镜铃
-  b.cylZ(0.0300, 0.010, [0, 0.170, -0.356], 'metal', COL.steelWorn, 20);               // 物镜前缘
-  b.box(0.0025, 0.0022, 0.010, [0, 0.197, -0.356], 'metal', COL.steelWorn);            // 前缘磨亮
-  b.cylZ(0.0260, 0.0030, [0, 0.170, -0.362], 'glass', COL.glass, 20, true);            // 前镜片
-  b.cylZ(0.0185, 0.240, [0, 0.170, -0.190], 'polymer', COL.polymerBlack, 16);          // 镜筒内壁（暗）
-  b.cylZ2(0.0235, 0.0205, 0.074, [0, 0.170, 0.017], 'metal', COL.steelDark, 20);       // 目镜
-  b.cylZ(0.0250, 0.010, [0, 0.170, 0.056], 'metal', COL.steelWorn, 20);                // 目镜后缘
-  b.cylZ(0.0200, 0.0030, [0, 0.170, 0.061], 'glass', COL.glass, 20, true);             // 后镜片
-  b.torus(0.0245, 0.0035, [0, 0.170, 0.050], 'metal', COL.steelDark);                  // 屈光环
-  b.cylZ(0.0235, 0.030, [0, 0.170, -0.030], 'metal', COL.steelWorn, 20);               // 变倍环
+  // 可变倍狙击镜（3~10×，滚轮调节）：镜筒 / 物镜铃 / 目镜 / 变倍环 / 调节旋钮
+  // 与冲锋枪红点镜同一套真实光学：目镜后端的镜片由 optics.js 的 PiP shader 呈现放大画面，
+  // 镜片圆内是放大像、镜片外视角不变；倍率变化只改 PiP 相机的 FOV，不影响弹道。
+  const SC_Y = 0.170;            // 光轴高度
+  const SC_Z = -0.145;           // 镜筒中点
+  const SC_R = 0.0205;           // 镜筒外半径
+  const SC_LEN = 0.250;          // 镜筒长度
+  const SC_EYE_Z = 0.061;        // 目镜镜片（靠眼睛一侧）的 z
+  const LENS_R_SN = 0.0196;      // 镜片半径（39mm 镜窗）
+  b.cylZ(SC_R, SC_LEN, [0, SC_Y, SC_Z], 'metal', COL.steelDark, 20);                    // 镜筒
+  b.cylZ2(0.0290, 0.0210, 0.085, [0, SC_Y, -0.310], 'metal', COL.steelDark, 20);        // 物镜铃
+  b.cylZ(0.0300, 0.010, [0, SC_Y, -0.356], 'metal', COL.steelWorn, 20);                 // 物镜前缘
+  b.box(0.0025, 0.0022, 0.010, [0, SC_Y + 0.027, -0.356], 'metal', COL.steelWorn);      // 前缘磨亮
+  b.cylZ(0.0260, 0.0030, [0, SC_Y, -0.362], 'glass', COL.glass, 20, true);              // 前镜片（物镜）
+  b.cylZ(0.0185, 0.240, [0, SC_Y, -0.190], 'polymer', COL.polymerBlack, 16);            // 镜筒内壁（暗）
+  b.cylZ2(0.0235, 0.0205, 0.074, [0, SC_Y, 0.017], 'metal', COL.steelDark, 20);         // 目镜
+  b.cylZ(0.0250, 0.010, [0, SC_Y, 0.056], 'metal', COL.steelWorn, 20);                  // 目镜后缘
+  b.torus(0.0245, 0.0035, [0, SC_Y, 0.050], 'metal', COL.steelDark);                    // 屈光环
+  // 变倍环（滚轮调节倍率时这个环会真实转动）
+  b.cylZ(0.0235, 0.030, [0, SC_Y, -0.030], 'metal', COL.steelWorn, 20);
   for (let i = 0; i < 8; i++) {
     const a = (i / 8) * Math.PI * 2;
-    b.box(0.0035, 0.004, 0.026, [Math.cos(a) * 0.0235, 0.170 + Math.sin(a) * 0.0235, -0.030],
+    b.box(0.0035, 0.004, 0.026, [Math.cos(a) * 0.0235, SC_Y + Math.sin(a) * 0.0235, -0.030],
       'metal', COL.steelDark, [0, 0, a]);
   }
-  b.box(0.014, 0.010, 0.030, [0.030, 0.170, -0.030], 'metal', COL.steelWorn, [0, 0, 0.2]); // 变倍拨杆
-  b.cylY(0.0120, 0.018, [0, 0.192, -0.150], 'metal', COL.steelWorn, 14);               // 高低旋钮
-  b.cylY(0.0085, 0.014, [0, 0.205, -0.150], 'metal', COL.steelDark, 12);
-  b.cylX(0.0120, 0.018, [0.030, 0.170, -0.150], 'metal', COL.steelWorn, 14);           // 风偏旋钮
-  b.cylX(0.0090, 0.012, [0.040, 0.170, -0.150], 'metal', COL.steelDark, 12);
+  b.box(0.014, 0.010, 0.030, [0.030, SC_Y, -0.030], 'metal', COL.steelWorn, [0, 0, 0.2]); // 变倍拨杆
+  b.cylY(0.0120, 0.018, [0, SC_Y + 0.022, -0.150], 'metal', COL.steelWorn, 14);          // 高低旋钮
+  b.cylY(0.0085, 0.014, [0, SC_Y + 0.035, -0.150], 'metal', COL.steelDark, 12);
+  b.cylX(0.0120, 0.018, [0.030, SC_Y, -0.150], 'metal', COL.steelWorn, 14);             // 风偏旋钮
+  b.cylX(0.0090, 0.012, [0.040, SC_Y, -0.150], 'metal', COL.steelDark, 12);
   b.cylX(0.0110, 0.014, [-0.030, 0.170, -0.150], 'metal', COL.steelWorn, 14);          // 视差旋钮
   // 枪托（聚合物底盘 + 托腮 + 托底）
   b.rbox(0.042, 0.105, 0.055, 0.010, grip, 'polymer', COL.polymerOd, [A, 0, 0], true);
@@ -1000,13 +1008,19 @@ function buildSniper(b) {
 
   return {
     muzzle: [0, 0.108, -1.005],
-    sightPoint: [0, 0.170, -0.030],
+    // 光轴对准目镜镜片中心（PiP 镜片就贴在这里）
+    sightPoint: [0, SC_Y, SC_EYE_Z],
     sightType: 'scope',
-    scopeLens: [0, 0.170, -0.362],
+    scopeLens: [0, SC_Y, -0.362],
     rightGrip: [0, -0.004, 0.058],
     leftGrip: [0, 0.055, -0.500],
     boltAxis: [0, 0, 1],
-    sprite: null,
+    // 狙击镜走与红点镜相同的真实光学 PiP（镜片圆内放大 + 光学分划）
+    sprite: { color: 0xff4a32, size: LENS_R_SN * 2, position: [0, SC_Y, SC_EYE_Z], optic: true },
+    opticMagnification: 6,           // 默认倍率（可滚轮在 minZoom~maxZoom 间调整）
+    minZoom: 3,
+    maxZoom: 10,
+    zoomStep: 1,
   };
 }
 
@@ -1272,6 +1286,10 @@ export function createWeaponModel(kind, { firstPerson = false, simple = false } 
     sightPoint: toVec3(meta.sightPoint),
     scopeLens: meta.scopeLens ? toVec3(meta.scopeLens) : null,   // 狙击镜前镜片中心（PiP/遮罩定位）
     opticMagnification: meta.opticMagnification || 0,            // 镜片内放大倍率（0 = 不放大）
+    // 可变倍光学（狙击镜）：滚轮在 minZoom~maxZoom 间调整，step 为每格步进
+    minZoom: meta.minZoom || meta.opticMagnification || 1,
+    maxZoom: meta.maxZoom || meta.opticMagnification || 1,
+    zoomStep: meta.zoomStep || 1,
     rightGrip: toVec3(meta.rightGrip),
     leftGrip: toVec3(meta.leftGrip),
     boltAxis: meta.boltAxis ? toVec3(meta.boltAxis) : null,      // 拉栓/泵动方向（单位向量，+Z = 向后）

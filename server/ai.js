@@ -1425,10 +1425,29 @@ function tryFire(bot, brain, now, ctx, cfg) {
   }
   if (friendlyInLine(bot, brain, ctx)) return;
 
-  // 点射节奏：3~6 发一组，组间停顿
-  if (brain.burstLeft <= 0) {
-    if (now < brain.nextBurstAt) return;
-    brain.burstLeft = randInt(ctx, num(cfg.burstMin, 3), num(cfg.burstMax, 6));
+  // ---- 开火节奏：全自动武器"长按扳机"，半自动/大威力才点射 ----
+  // 长按语义：只要目标持续可见且在射程内，就按武器真实射速连续射击（trigger 保持按下），
+  // 只有目标消失/换弹/需要重新瞄准时才松开。这比"固定 N 发一组"更像真人压枪扫射。
+  const fullAuto = wi.fireMode !== 'semi' && (wi.fireInterval * 1000) <= 140;
+  const holdMs = num(cfg.triggerHoldMs, 900);        // 一次长按最长持续时间
+  if (fullAuto) {
+    if (!brain.triggerHeld) {
+      // 开始一次新的长按
+      brain.triggerHeld = true;
+      brain.triggerAt = now;
+      brain.triggerUntil = now + holdMs + randRange(ctx, 0, 700);
+    } else if (now > brain.triggerUntil) {
+      // 长按到时间：短暂松开再按（避免无限扫射，也让射击有呼吸感）
+      brain.triggerHeld = false;
+      brain.nextBurstAt = now + randRange(ctx, num(cfg.burstPauseMin, 260) * 0.5, num(cfg.burstPauseMax, 620) * 0.5);
+      return;
+    }
+  } else {
+    // 半自动 / 霰弹 / 狙击：仍用点射分组
+    if (brain.burstLeft <= 0) {
+      if (now < brain.nextBurstAt) return;
+      brain.burstLeft = randInt(ctx, num(cfg.burstMin, 3), num(cfg.burstMax, 6));
+    }
   }
 
   // 瞄准误差（持续追踪收敛后的偏移）
@@ -1439,12 +1458,13 @@ function tryFire(bot, brain, now, ctx, cfg) {
     -1.2, 1.2,
   );
 
-  brain.burstLeft--;
+  if (!fullAuto) brain.burstLeft--;
   brain.lastShotRequestAt = now;
-  const fireIntervalMs = Math.max(60, (wi.fireInterval * 1000) /
+  // 长按时用武器真实射速（只受角色 fireRateMultiplier 影响），不打点射间隔
+  const fireIntervalMs = Math.max(45, (wi.fireInterval * 1000) /
     Math.max(0.35, num(cfg.fireRateMultiplier, 0.85)));
   brain.nextShotAt = now + fireIntervalMs;
-  if (brain.burstLeft <= 0) {
+  if (!fullAuto && brain.burstLeft <= 0) {
     brain.nextBurstAt = now + fireIntervalMs +
       randRange(ctx, num(cfg.burstPauseMin, 160), num(cfg.burstPauseMax, 400));
   }

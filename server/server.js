@@ -139,7 +139,7 @@ const RULES = {
   shieldMax: 100,             // 钢制插板（护甲）上限：出生自带
   armorReduce: 0.8,           // 躯干减伤比例（保留给旧接口/说明）
   armorAbsorb: { body: 0.8, legs: 0.55, head: 0.3 },  // 各部位被命中时插板吸收比例
-  matchCountdown: 10,         // 真人按空格后 10 秒倒计时
+  matchCountdown: 3,          // 真人按空格后 3 秒倒计时
   speedBoostMs: 8000,         // 加速道具持续
   speedBoostMult: 1.5,        // 加速移速倍率
   pickupRadius: 1.7,          // 拾取半径
@@ -275,7 +275,7 @@ const zoneRuntime = ZONE_DEFS.map((z) => ({
 const scores = { alpha: 0, bravo: 0 };
 const match = {
   mode: 'domination',
-  // 'waiting'（等待真人按空格）→ 'countdown'（10s）→ 'playing' → 'ended'
+  // 'waiting'（等待真人按空格）→ 'countdown'（3s）→ 'playing' → 'ended'
   phase: 'waiting',
   countdown: 0,
   timeLeft: MATCH_TIME_LIMIT,
@@ -1500,7 +1500,7 @@ function resetMatch() {
   if (isMain) console.log('[match] 第 ' + match.round + ' 局准备：等待真人按空格开始');
 }
 
-// 真人按空格 → 进入 10 秒倒计时
+// 真人按空格 → 进入 3 秒倒计时
 function requestMatchStart() {
   if (match.phase !== 'waiting') return false;
   if (humanCount() <= 0) return false;
@@ -2227,7 +2227,7 @@ wss.on('connection', (ws) => {
         break;
       }
       case 'ready': {
-        // 真人玩家按下空格：等待阶段 → 10 秒倒计时
+        // 真人玩家按下空格：等待阶段 → 3 秒倒计时
         requestMatchStart();
         break;
       }
