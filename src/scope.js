@@ -24,8 +24,10 @@ const HIP_ROT = {
 
 // 开镜时眼睛到瞄具的距离（按枪型分别设置：机瞄要贴近照门才真实，红点/手枪稍远）
 const ADS_CONFIG = {
-  pistol: { relief: 0.27, scale: 0.90 },
-  smg: { relief: 0.25, scale: 0.90 },
+  // 眼距（relief）= 眼睛到镜片的距离。红点/全息类瞄具眼睛贴近目镜后，
+  // 镜片会占满大部分视野——这是真实观感，也让"红点"足够大、好瞄准。
+  pistol: { relief: 0.26, scale: 0.90 },
+  smg: { relief: 0.13, scale: 0.90 },
   ak47: { relief: 0.23, scale: 0.95 },
   shotgun: { relief: 0.26, scale: 0.90 },
   sniper: { relief: 0.24, scale: 0.90 },

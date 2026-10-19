@@ -42,16 +42,17 @@ const LENS_FRAG = `
     float mask = 1.0 - smoothstep(1.0 - uSoftness, 1.0, r);
     if (mask <= 0.001) discard;
 
-    // 桶形畸变：r' = r * (1 + k r^2)，边缘向外扩张 → 真实凸透镜的"边缘放大 + 微弯"
-    // 桶形畸变：r' = r * (1 + k r^2)。k 越大边缘弯曲越强（真实凸透镜的"边缘压不下去"观感），
-    // 中心几乎无畸变，保证中心点 = 弹着点。
+    // ---------- 真实光学：镜内画面与主视角 1:1 对应 ----------
+    // 关键：不做任何整体缩放/放大。镜片上的每个像素都直接采样"同一视线方向"的场景，
+    // 这样玩家看到的目标大小与不开镜时完全一致，中心点就是准星，绝对不会影响命中判定。
+    // 只有在最外圈加入少量桶形畸变（真实凸透镜边缘的可见弯曲）。
     float k = uBarrel;
-    vec2 q = p * (1.0 + k * r * r * r);   // 三次项：边缘更明显，中心几乎为零
-    // 边缘额外向外的"鱼眼"拉伸，让最外圈景物产生弧线弯曲
-    q *= 1.0 + 0.10 * pow(r, 6.0);
+    vec2 q = p * (1.0 + k * r * r * r * r);   // 四次项：中心完全无畸变，仅边缘弯曲
+    // 非常轻微的外圈拉伸，形成"镜片边缘景物被压弯"的真实观感
+    q *= 1.0 + 0.045 * pow(r, 8.0);
 
-    // 色散：R/G/B 使用略微不同的畸变量（真实镜片边缘的彩色镶边）
-    float disp = 0.010 * pow(r, 3.0);
+    // 边缘色散（真实镜片最外圈的彩色镶边，中心为零）
+    float disp = 0.008 * pow(r, 5.0);
     vec2 uvR = (q * (1.0 + disp)) * 0.5 + 0.5;
     vec2 uvG = q * 0.5 + 0.5;
     vec2 uvB = (q * (1.0 - disp)) * 0.5 + 0.5;
@@ -61,42 +62,26 @@ const LENS_FRAG = `
     col.g = texture2D(uScene, uvG).g;
     col.b = texture2D(uScene, uvB).b;
 
-    // 镜片暗角：边缘略暗（真实光学系统的渐晕）
-    float vign = 1.0 - 0.42 * smoothstep(0.62, 1.02, r);
+    // 镜片渐晕：只有很靠边的一圈变暗（真实光学系统的边缘渐晕，不影响中心观察）
+    float vign = 1.0 - 0.30 * smoothstep(0.75, 1.02, r);
     col *= vign;
 
-    // 抗反射镀膜：极淡的冷色偏 + 边缘一圈偏红/紫的反射
-    float coat = smoothstep(0.80, 1.0, r);
-    col = mix(col, col * vec3(0.96, 0.99, 1.04), 0.35);
-    col += vec3(0.055, 0.020, 0.040) * coat * coat;
+    // 抗反射镀膜：极淡冷色偏移 + 最边缘一圈偏红的反射光
+    float coat = smoothstep(0.88, 1.0, r);
+    col = mix(col, col * vec3(0.97, 0.995, 1.03), 0.25);
+    col += vec3(0.045, 0.015, 0.032) * coat * coat;
 
     // 镀膜细微颗粒（避免"塑料感"）
-    col += (hash(vUv * 512.0) - 0.5) * 0.008;
+    col += (hash(vUv * 512.0) - 0.5) * 0.006;
 
-    // ---------- 光学分划 ----------
-    float ret = 0.0;
-    // 中心点
-    ret += 1.0 - smoothstep(0.012, 0.020, r);
-    // 中心细环
-    ret += (1.0 - smoothstep(0.002, 0.006, abs(r - 0.30))) * 0.55;
-    // 准星柱：上 / 下 / 左 / 右各一段（留出中心空档）
-    ret += (1.0 - smoothstep(0.0025, 0.0055, abs(p.x))) * step(0.115, abs(p.y)) * step(abs(p.y), 0.92) * 0.85;
-    ret += (1.0 - smoothstep(0.0025, 0.0055, abs(p.y))) * step(0.115, abs(p.x)) * step(abs(p.x), 0.92) * 0.85;
-    // 四角密位刻度（短横线）
-    float ticks = 0.0;
-    for (int i = 1; i <= 3; i++) {
-      float d = 0.30 + float(i) * 0.155;
-      ticks += (1.0 - smoothstep(0.0015, 0.004, abs(p.y - d))) * step(abs(p.x), 0.045);
-      ticks += (1.0 - smoothstep(0.0015, 0.004, abs(p.y + d))) * step(abs(p.x), 0.045);
-      ticks += (1.0 - smoothstep(0.0015, 0.004, abs(p.x - d))) * step(abs(p.y), 0.045);
-      ticks += (1.0 - smoothstep(0.0015, 0.004, abs(p.x + d))) * step(abs(p.y), 0.045);
-    }
-    ret += ticks * 0.75;
-    ret *= uOpacity;
-
-    // 分划带一点发光，暗处也看得清
-    col = mix(col, uReticleColor, clamp(ret, 0.0, 1.0) * 0.92);
-    col += uReticleColor * clamp(ret, 0.0, 1.0) * 0.35;
+    // ---------- 分划：单个红色发光点（真实 red dot，不是十字）----------
+    // 一个锐利的实心亮核 + 柔和光晕，在镜片正中心，与弹着点严格重合。
+    float dotCore = 1.0 - smoothstep(0.020, 0.030, r);
+    float dotGlow = 1.0 - smoothstep(0.030, 0.085, r);
+    float dotA = clamp(dotCore + dotGlow * 0.42, 0.0, 1.0) * uOpacity;
+    // 红色光点叠加在画面之上（加色），暗处也清晰可见
+    col = mix(col, uReticleColor, dotCore * uOpacity * 0.95);
+    col += uReticleColor * (dotGlow * 0.55 + dotCore * 0.65) * uOpacity;
 
     // 最终透明度：只在开镜时显示
     float alpha = mask * uOpacity;
@@ -130,8 +115,8 @@ export function createOptics(renderer, scene) {
       uOpacity: { value: 0 },
       uAspect: { value: 1 },
       uReticleColor: { value: new THREE.Color(0xff3b2a) },
-      uBarrel: { value: 0.30 },
-      uSoftness: { value: 0.055 },
+      uBarrel: { value: 0.16 },
+      uSoftness: { value: 0.045 },
     },
     vertexShader: LENS_VERT,
     fragmentShader: LENS_FRAG,

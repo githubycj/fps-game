@@ -542,24 +542,25 @@ function buildSmg(b) {
   b.cylX(0.012, 0.020, [0, 0.123, 0.012], 'metal', COL.steelDark);
   b.box(0.004, 0.005, 0.004, [0, 0.135, 0.012], 'metal', COL.steelBlack);
 
-  // 红点镜（micro red dot：镜座 / 镜框 / 镜片 / 旋钮 / 电池仓）
-  // 镜框：圆形全环镜筒（浮点式红点外形），中间完全通透，光学镜片填满内圈
-  b.box(0.026, 0.010, 0.048, [0, 0.1265, -0.095], 'metal', COL.steelDark);
-  b.cylX(0.004, 0.030, [0, 0.121, -0.075], 'metal', COL.steelWorn);
-  b.rbox(0.030, 0.020, 0.036, 0.004, [0, 0.132, -0.095], 'polymer', COL.polymerBlack, null, true);
-  // 上下两条横梁 + 左右两根细立柱（形成矩形外框）
-  b.box(0.040, 0.0045, 0.008, [0, 0.1775, -0.095], 'polymer', COL.polymerBlack);
-  b.box(0.040, 0.0045, 0.008, [0, 0.1205, -0.095], 'polymer', COL.polymerBlack);
-  for (const sx of [-1, 1]) b.box(0.0045, 0.061, 0.008, [sx * 0.0198, 0.149, -0.095], 'polymer', COL.polymerBlack);
-  // 镜筒前端/后端圆环（托住光学镜片，形成真实镜筒观感）
-  for (const z of [-0.120, -0.070]) b.torus(0.0175, 0.0026, [0, 0.149, z], 'metal', COL.steelDark);
-  // 镜片玻璃（真实光学镜片由 optics shader 绘制，这里保留一层极淡的镀膜底色）
-  b.box(0.031, 0.054, 0.0010, [0, 0.149, -0.119], 'glass', COL.glass);
-  b.box(0.029, 0.052, 0.0010, [0, 0.149, -0.071], 'glass', COL.glass);
-  b.cylY(0.0075, 0.014, [0, 0.182, -0.095], 'metal', COL.steelWorn, 12);
-  b.cylY(0.0055, 0.006, [0, 0.191, -0.095], 'metal', COL.steelDark, 12);
-  b.cylX(0.0075, 0.014, [0.0225, 0.149, -0.095], 'metal', COL.steelWorn, 12);
-  b.cylX(0.006, 0.010, [-0.0225, 0.149, -0.100], 'metal', COL.steelDark, 12);
+  // 红点镜：大窗口浮点式红点（镜片直径 105mm 观感），中间完全通透
+  b.box(0.040, 0.012, 0.052, [0, 0.1265, -0.095], 'metal', COL.steelDark);
+  b.cylX(0.004, 0.034, [0, 0.121, -0.072], 'metal', COL.steelWorn);
+  b.rbox(0.048, 0.024, 0.040, 0.004, [0, 0.132, -0.095], 'polymer', COL.polymerBlack, null, true);
+  // 上下两条横梁（决定镜窗高度 ≈ 0.106）
+  b.box(0.100, 0.006, 0.010, [0, 0.2020, -0.095], 'polymer', COL.polymerBlack);
+  b.box(0.100, 0.006, 0.010, [0, 0.0960, -0.095], 'polymer', COL.polymerBlack);
+  // 左右两根立柱（决定镜窗宽度 ≈ 0.094）
+  for (const sx of [-1, 1]) b.box(0.006, 0.112, 0.010, [sx * 0.0470, 0.149, -0.095], 'polymer', COL.polymerBlack);
+  // 镜筒前后圆环（托住光学镜片）
+  for (const z of [-0.126, -0.064]) b.torus(0.0500, 0.0030, [0, 0.149, z], 'metal', COL.steelDark);
+  // 镜片玻璃（真实光学由 optics shader 绘制，这里留一层极淡镀膜底色）
+  b.box(0.092, 0.104, 0.0010, [0, 0.149, -0.1255], 'glass', COL.glass);
+  b.box(0.090, 0.102, 0.0010, [0, 0.149, -0.0645], 'glass', COL.glass);
+  // 顶部/侧面调节旋钮
+  b.cylY(0.0090, 0.016, [0, 0.210, -0.095], 'metal', COL.steelWorn, 12);
+  b.cylY(0.0065, 0.007, [0, 0.220, -0.095], 'metal', COL.steelDark, 12);
+  b.cylX(0.0090, 0.016, [0.054, 0.149, -0.095], 'metal', COL.steelWorn, 12);
+  b.cylX(0.0070, 0.011, [-0.054, 0.149, -0.100], 'metal', COL.steelDark, 12);
 
   // 握把（含防滑纹）
   b.rbox(0.046, 0.095, 0.052, 0.010, grip, 'polymer', COL.polymerBlack, [A, 0, 0], true);
@@ -625,8 +626,8 @@ function buildSmg(b) {
     rightGrip: [0, -0.016, 0.042],
     leftGrip: [0, 0.038, -0.365],
     boltAxis: null,
-    // 光学镜片：直径 0.042（≈42mm 真实红点窗），放在靠近眼睛的后端环内
-    sprite: { color: COL.dotRed, size: 0.042, position: [0, 0.149, -0.072] },
+    // 光学镜片：直径 0.105（贴近目镜后约占视野 60%，符合真实红点的"大窗口"观感）
+    sprite: { color: COL.dotRed, size: 0.105, position: [0, 0.149, -0.072] },
   };
 }
 
