@@ -32,10 +32,7 @@ const ADS_CONFIG = {
   smg: { relief: 0.125, scale: 0.92 },
   ak47: { relief: 0.23, scale: 0.95 },
   shotgun: { relief: 0.26, scale: 0.90 },
-  // 狙击镜：与红点镜同一套 PiP 光学。眼距 165mm 是真实狙击镜的贴眼距离，
-  // 配合 39mm 镜窗 → 镜窗张角约 13.6°，屏幕占比约 25%，既能看清放大画面，
-  // 又不会像 95mm 那样让镜筒糊满整屏。
-  sniper: { relief: 0.165, scale: 0.92 },
+  sniper: { relief: 0.24, scale: 0.90 },
 };
 
 // 第一人称手臂尺寸（相机局部，米）
@@ -188,7 +185,7 @@ export class ScopeController {
     if (!this.active) this.setWeapon(kind);
   }
 
-  // 把光学 shader 绑定到镜片平面（RDS / 狙击镜通用）
+  // 把光学 shader 绑定到镜片平面（RDS 类瞄具）
   _bindOptics(group) {
     const lens = group && group.userData ? group.userData.redDot : null;
     if (!lens || !lens.userData || !lens.userData.isOpticLens) return;
@@ -197,35 +194,27 @@ export class ScopeController {
     // 这里手工构造材质，共享同一张场景贴图，但每个瞄具拥有独立的 uniform 值。
     const src = this.optics.material;
     const hex = lens.userData.reticleColor;
-    // 狙击镜：分划用小尺寸点 + 更低亮度，避免在放大画面里糊成一团
-    const isSniper = (group.userData && group.userData.sightType === 'scope');
     const mat = new THREE.ShaderMaterial({
       uniforms: {
         uScene: { value: this.optics.rt.texture },
         uOpacity: { value: 0 },
         uAspect: { value: 1 },
         uReticleColor: { value: new THREE.Color(typeof hex === 'number' ? hex : 0xff3b2a) },
-        uBarrel: { value: isSniper ? 0.0 : src.uniforms.uBarrel.value },
-        uSoftness: { value: isSniper ? 0.03 : src.uniforms.uSoftness.value },
+        uBarrel: { value: src.uniforms.uBarrel.value },
+        uSoftness: { value: src.uniforms.uSoftness.value },
         uDotOffset: { value: new THREE.Vector2(0, 0) },
-        uDotSize: { value: isSniper ? 0.012 : src.uniforms.uDotSize.value },
-        // 狙击镜用「十字缺上竖」分划，红点镜保持红点
-        uReticle: { value: isSniper ? 1 : 0 },
+        uDotSize: { value: src.uniforms.uDotSize.value },
       },
       vertexShader: src.vertexShader,
       fragmentShader: src.fragmentShader,
       transparent: true,
       depthWrite: false,
-      // 镜片自己不参与深度写入，但仍要接受深度测试，才能被枪身正确遮挡
       depthTest: true,
       side: THREE.DoubleSide,
       toneMapped: true,
     });
     lens.material.dispose();
     lens.material = mat;
-    // 每个瞄具的镜片初始隐藏，只有当前武器的镜片会随开镜量显示
-    lens.visible = false;
-    lens.renderOrder = 900;
   }
 
   setWeapon(kind) {
@@ -252,14 +241,8 @@ export class ScopeController {
     const relief = Math.max(0.05, cfg.relief || 0.26);
     const halfAngRad = Math.atan2(rWorld, relief);
     const lensAngularDeg = (halfAngRad * 2 * 180) / Math.PI;
-    // 镜内视场 = 镜片角直径 / 放大倍率（真正的"M 倍放大"）
-    return Math.max(0.4, Math.min(60, lensAngularDeg / mag));
-  }
-
-  /** 当前瞄具的固定倍率（0 = 无光学放大） */
-  zoomLevelOf() {
-    const gun = this.active;
-    return (gun && gun.userData && gun.userData.opticMagnification) || 1;
+    // 镜内视场 = 镜片角直径 / 放大倍率（11.4° 一类的小 FOV，才是真正的"M 倍放大"）
+    return Math.max(4, Math.min(60, lensAngularDeg / mag));
   }
 
   /**
@@ -356,10 +339,8 @@ export class ScopeController {
 
     gun.position.set(px, py, pz);
     gun.rotation.set(rx, ry, rz);
-    // 所有枪（含狙击枪）开镜时都保留枪身模型：狙击镜现在走真实 PiP 光学镜片，
-    // 不再用"隐藏枪身 + 全屏遮罩"的旧做法，这样能看到镜筒与镜片里的放大画面。
-    gun.visible = (p.alive !== false);
-    // 开镜时手臂必须继续跟随枪身（否则会出现"枪和手分离"）
+    gun.visible = !this.scopeActive && (p.alive !== false);
+    // 开镜时手臂必须继续跟随枪身（否则会出现"枪和手分离"）；只有狙击镜隐藏枪身时一起隐藏
     const armsOn = gun.visible;
     if (this._arms) this._arms.group.visible = armsOn;
     if (armsOn) this._updateArms(gun);
@@ -367,7 +348,7 @@ export class ScopeController {
     // 光学镜片：开镜量决定不透明度；镜片随开镜略微放大、更贴近眼睛（凑近镜筒的真实感）
     const dot = gun.userData.redDot;
     if (dot) {
-      dot.visible = ads > 0.02;
+      dot.visible = ads > 0.02 && !this.scopeActive;
       if (dot.userData && dot.userData.isOpticLens) {
         const mat = dot.material;
         if (mat && mat.uniforms && mat.uniforms.uOpacity) {

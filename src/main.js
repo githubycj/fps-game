@@ -30,7 +30,7 @@ const HUD_METHODS = [
   'showMenu', 'hideMenu', 'setMenuStatus', 'setMenuVisible',
   'setHp', 'setShield', 'setStamina', 'setStance',
   'setWeapon', 'setReload', 'setWeaponSlots',
-  'setCrosshair', 'setAiming', 'setScope', 'setOpticZoom',
+  'setCrosshair', 'setAiming', 'setScope',
   'showHitmarker', 'flashDamage', 'showDamageFrom',
   'setScores', 'setZones', 'setTimer', 'setUav', 'setKills', 'setDeaths', 'setPing', 'setPlayers',
   'addKillFeed', 'addToast', 'setStreak',
@@ -157,7 +157,7 @@ console.error = (...args) => { errors.push(args.join(' ')); originalError(...arg
 
 let lastMinimapAt = 0;
 let lastStateMsg = null;
-let lastHud = { aiming: null, scope: null, stance: null, weapon: null, mag: -1, reserve: -1, zoomLabel: null };
+let lastHud = { aiming: null, scope: null, stance: null, weapon: null, mag: -1, reserve: -1 };
 
 const hex = (c) => '#' + Number(c || 0x888888).toString(16).padStart(6, '0');
 const esc = (s) => String(s).replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
@@ -558,17 +558,16 @@ document.addEventListener('mouseup', (e) => {
 
 window.addEventListener('wheel', (e) => {
   if (!started || !local || !local.locked || !local.alive) return;
-  // 滚轮只负责切换武器（变倍已改为固定倍率，不再占用滚轮）
   if (local.cycleWeapon(e.deltaY > 0 ? 1 : -1)) onWeaponChanged();
-}, { passive: false });
+}, { passive: true });
 
 document.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     e.preventDefault();
-    // 开局等待阶段：空格 = 开始 3 秒倒计时
+    // 开局等待阶段：空格 = 开始 10 秒倒计时
     if (started && matchPhase === 'waiting') {
       net.send({ t: 'ready' });
-      H.setMatchPhase('countdown', 3);
+      H.setMatchPhase('countdown', 10);
       return;
     }
     // 未开赛不跳跃
@@ -1235,13 +1234,9 @@ function updateHudPerFrame() {
   const aimingNow = local.adsAmount > 0.5;
   const scopeNow = local.scopeActive;
   if (lastHud.aiming !== aimingNow) { H.setAiming(aimingNow, w.sightType); lastHud.aiming = aimingNow; }
-  // 倍率标签：光学镜显示固定倍率，红点/机瞄不显示
-  const zoomLabel = w.scopeMagnification > 1 ? w.scopeMagnification + '×' : '';
-  if (lastHud.scope !== scopeNow || lastHud.zoomLabel !== zoomLabel) {
-    H.setScope(false, w.sightType, zoomLabel);   // 所有瞄具都用 PiP 镜片，不再全屏遮罩
-    if (H.setOpticZoom) H.setOpticZoom(zoomLabel);
+  if (lastHud.scope !== scopeNow) {
+    H.setScope(scopeNow, w.sightType, w.scopeMagnification > 1 ? w.scopeMagnification + '×' : '');
     lastHud.scope = scopeNow;
-    lastHud.zoomLabel = zoomLabel;
   }
   if (lastHud.stance !== local.stance) { H.setStance(local.stance); lastHud.stance = local.stance; }
   H.setStamina(local.stamina, WORLD.staminaMax);
@@ -1320,9 +1315,7 @@ function loop() {
   // 真实光学（PiP）：只有带光学镜片的枪才需要额外渲染。
   // 镜内视场 = 镜片角直径 ÷ 放大倍率 → 镜片圆内是真正的 M 倍放大像，镜片外仍是原视角；
   // 镜片圆心与相机正前方重合，所以放大不会改变命中判定。
-  // 注意：狙击镜现在也用同一套 PiP 镜片（不再走全屏遮罩），所以这里不能再排除 scopeActive，
-  // 否则狙击开镜时贴图不更新 → 镜片里是上一帧的静止画面，还会随渲染顺序闪烁。
-  if (local && local.adsAmount > 0.02) {
+  if (local && !scope.scopeActive && local.adsAmount > 0.02) {
     const opticFov = scope.opticCameraFov();
     if (opticFov > 0) {
       try { optics.render(camera, opticFov); }

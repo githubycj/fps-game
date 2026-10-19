@@ -121,7 +121,7 @@ const state = {
   stance: 'stand',
   weapon: 'pistol', weaponName: '手枪', mag: 0, reserve: 0,
   reloading: false, reloadProgress: null,
-  ads: false, sightType: 'iron', scopeActive: false, zoomLabel: '3×',
+  ads: false, sightType: 'iron', scopeActive: false, zoomLabel: '6×',
   crosshairHidden: false, crosshairSize: 22,
   hitmarkerPart: null, hitmarkerKilled: false,
   lastDamageAngle: null,
@@ -831,20 +831,14 @@ export const hud = {
     state.sightType = st;
     const c = node('crosshair');
     if (c) c.classList.toggle('aiming', !!ads);
-    // 开镜时隐藏普通准星
+    // 开镜时隐藏普通准星（机瞄/红点靠肉眼瞄具，狙击靠分划遮罩）
     applyCrosshairVisibility();
-    // 注意：狙击镜现在和红点镜一样走真实 PiP 光学镜片（放大画面在镜片圆内），
-    // 不再需要全屏圆形遮罩 —— 遮罩会把镜筒外的真实视野也盖住，反而不真实。
-    setScopeInternal(false, st, state.zoomLabel);
+    // 狙击开镜：由 setAiming 直接驱动遮罩；红点/机瞄永远不显示遮罩
+    if (ads && isScopeSight(st)) setScopeInternal(true, st, state.zoomLabel);
+    else setScopeInternal(false, st, state.zoomLabel);
   },
   setScope(active, sightType, zoomLabel) {
-    // 保留接口：只有显式要求时才显示全屏遮罩（当前所有瞄具都用 PiP 镜片）
-    setScopeInternal(!!active && isScopeSight(sightType), sightType, zoomLabel);
-  },
-  /** 更新镜片内的光学分划颜色/大小（可变倍时红点/十字大小保持视觉一致） */
-  setOpticZoom(label) {
-    state.zoomLabel = String(label || '');
-    setText(node('scopeZoom'), state.zoomLabel || '3×');
+    setScopeInternal(active, sightType, zoomLabel);
   },
 
   // ---------- 命中反馈 ----------
@@ -1162,7 +1156,7 @@ export const hud = {
     const root = node('warmup');
     if (!root) return;
     setText(node('warmupTitle'), title || '按 空格 开始战斗');
-    setText(node('warmupSub'), sub || '点击画面锁定鼠标 · 按空格开始 3 秒倒计时');
+    setText(node('warmupSub'), sub || '点击画面锁定鼠标 · 按空格开始 10 秒倒计时');
     const count = node('warmupCount');
     if (count) count.classList.add('hidden');
     root.classList.remove('hidden');
@@ -1191,7 +1185,7 @@ export const hud = {
   setMatchPhase(phase, countdown) {
     const p = String(phase || 'waiting');
     if (p === 'waiting') {
-      this.showWarmup('按 空格 开始战斗', '点击画面锁定鼠标 · 按空格开始 3 秒倒计时');
+      this.showWarmup('按 空格 开始战斗', '点击画面锁定鼠标 · 按空格开始 10 秒倒计时');
       return;
     }
     if (p === 'countdown') {

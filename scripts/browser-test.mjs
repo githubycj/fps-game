@@ -275,30 +275,22 @@ try {
   const fovBefore = await evaluate(() => window.__game.camera.fov);
   await mouseDown(640, 360, 'right');
   await sleep(900);
-  const scope = await evaluate(() => {
-    const gun = window.__game.scope.active;
-    const lens = gun && gun.userData ? gun.userData.redDot : null;
-    return {
-      fov: window.__game.camera.fov,
-      scopeActive: window.__game.scopeActive,
-      overlay: !document.getElementById('scopeOverlay').classList.contains('hidden'),
-      crosshairHidden: document.getElementById('crosshair').classList.contains('hidden'),
-      lensVisible: !!(lens && lens.visible && lens.material && lens.material.uniforms
-        && lens.material.uniforms.uOpacity.value > 0.5),
-      ads: window.__game.player.ads,
-      hudScope: window.__hud.scopeActive,
-    };
-  });
+  const scope = await evaluate(() => ({
+    fov: window.__game.camera.fov,
+    scopeActive: window.__game.scopeActive,
+    overlay: !document.getElementById('scopeOverlay').classList.contains('hidden'),
+    crosshairHidden: document.getElementById('crosshair').classList.contains('hidden'),
+    ads: window.__game.player.ads,
+    hudScope: window.__hud.scopeActive,
+  }));
   await page.screenshot(path.join(SHOT_DIR, '03-scope.png'));
   check('狙击开镜真实放大（FOV 明显变小）', scope.fov < fovBefore - 25, `fov ${fovBefore.toFixed(0)} -> ${scope.fov.toFixed(0)}`);
-  // 狙击镜现在与红点镜一致：放大画面在镜片圆内（PiP），不再有全屏圆形遮罩
-  check('狙击开镜使用 PiP 镜片且隐藏普通准星', scope.lensVisible && scope.crosshairHidden,
-    `lens=${scope.lensVisible} crosshairHidden=${scope.crosshairHidden}`);
-  check('开镜过渡量接近满值', scope.ads > 0.7, 'ads=' + scope.ads.toFixed(2));
+  check('开镜显示圆形分划遮罩且隐藏普通准星', scope.overlay && scope.crosshairHidden && scope.scopeActive);
+  check('开镜过渡量接近满值', scope.ads > 0.8, 'ads=' + scope.ads.toFixed(2));
   await mouseUp(640, 360, 'right');
   const scopeOff = await page.waitFor(`!window.__game.scopeActive && window.__game.camera.fov > 62`, 8000);
   const fovBack = await evaluate(() => window.__game.camera.fov);
-  check('松开右键恢复视野', scopeOff && fovBack > 60, 'fov=' + fovBack.toFixed(1));
+  check('松开右键恢复视野并关闭遮罩', scopeOff && fovBack > 60, 'fov=' + fovBack.toFixed(1));
 
   // ---------- 4. 命中特效（白十字 / 红斜 X） ----------
   // 4.1 直接验证 HUD 视觉契约
