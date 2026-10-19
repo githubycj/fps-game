@@ -31,7 +31,7 @@ const HUD_METHODS = [
   'setHp', 'setShield', 'setStamina', 'setStance',
   'setWeapon', 'setReload', 'setWeaponSlots',
   'setCrosshair', 'setAiming', 'setScope',
-  'showHitmarker', 'flashDamage', 'showDamageFrom',
+  'showHitmarker', 'flashDamage', 'showDamageFrom', 'bloodVeins', 'setLowHpVeins',
   'setScores', 'setZones', 'setTimer', 'setUav', 'setKills', 'setDeaths', 'setPing', 'setPlayers',
   'addKillFeed', 'addToast', 'setStreak',
   'showDeath', 'hideDeath', 'showPause', 'hidePause',
@@ -1123,6 +1123,9 @@ net.on('hit', (m) => {
   if (m.targetId === myId) {
     if (local) local.hurt(m.part === 'head' ? 0.03 : 0.014);
     H.flashDamage(m.part === 'head');
+    // 受击血丝：按本次伤害占最大生命的比例决定浓淡（约 0.5s 消散）
+    const dmgTaken = typeof m.dmg === 'number' ? m.dmg : 15;
+    H.bloodVeins(Math.max(0.12, Math.min(1, dmgTaken / Math.max(1, WORLD.maxHp))));
     if (m.shooterId && m.shooterId !== myId) {
       const r = remotes.get(m.shooterId);
       const sx = r ? r.group.position.x : m.x, sz = r ? r.group.position.z : m.z;

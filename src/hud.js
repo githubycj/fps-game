@@ -116,6 +116,7 @@ function updateSensLabel() {
 // ---------- HUD 状态（同时作为 window.__hud 暴露给自动化测试） ----------
 const state = {
   hp: 100, hpMax: 100,
+  lowHpVeins: false,
   shield: 0, shieldMax: 100,
   stamina: 100, staminaMax: 100,
   stance: 'stand',
@@ -142,6 +143,7 @@ if (typeof window !== 'undefined') window.__hud = state;
 let markTimer = null;
 let headMarkTimer = null;
 let flashTimer = null;
+let bloodTimer = null;
 let staminaFillEl = null;
 
 // ============================================================
@@ -717,6 +719,9 @@ export const hud = {
       wrap.classList.toggle('low', v / m <= 0.3);
       wrap.classList.toggle('critical', v / m <= 0.15);
     }
+    // 低血持续暗黑血丝：hp < 15% 常驻，回血（> 15%）或死亡才消失
+    const low = v > 0.001 && v / m < 0.15;
+    this.setLowHpVeins(low);
   },
   // GOD 无敌标记（顶部金色徽标 + 剩余秒数）
   setGod(active, seconds) {
@@ -882,6 +887,113 @@ export const hud = {
       f.classList.remove('show', 'head');
     }, 640);
   },
+
+  /**
+   * 受击血丝：屏幕边缘生成血管状纹理，约 0.5 秒消散。
+   * @param {number} severity 0~1，伤害占比越高血丝越密越粗
+   */
+  bloodVeins(severity) {
+    const svg = node('bloodVeins');
+    const group = node('bvGroup');
+    if (!svg || !group || typeof document.createElementNS !== 'function') return;
+    const sev = clamp(num(severity, 0.2), 0.05, 1);
+    const NS = 'http://www.w3.org/2000/svg';
+    const W = Math.max(320, svg.clientWidth || window.innerWidth || 1000);
+    const H = Math.max(240, svg.clientHeight || window.innerHeight || 700);
+    svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+    while (group.firstChild) group.removeChild(group.firstChild);
+
+    const cx = W / 2, cy = H / 2;
+    const baseW = Math.min(W, H) / 500;
+
+    // 一条"血管"：从屏幕边缘某点出发，向中心方向蜿蜒生长（多段贝塞尔 + 分叉）
+    const drawVein = (startX, startY, dirX, dirY, len, width, opacity, depth) => {
+      let x = startX, y = startY;
+      let dx = dirX, dy = dirY;
+      let d = `M${x.toFixed(1)} ${y.toFixed(1)}`;
+      const segs = 4 + Math.floor(Math.random() * 3);
+      for (let s = 0; s < segs; s++) {
+        // 每段方向轻微随机偏转，形成自然的蜿蜒
+        const turn = (Math.random() - 0.5) * 1.0;
+        const cs = Math.cos(turn), sn = Math.sin(turn);
+        const nx = dx * cs - dy * sn;
+        const ny = dx * sn + dy * cs;
+        dx = nx; dy = ny;
+        const stepLen = (len / segs) * (0.6 + Math.random() * 0.8);
+        const nx2 = x + dx * stepLen;
+        const ny2 = y + dy * stepLen;
+        // 二次贝塞尔，控制点偏移做出血管的弧度
+        const mx = (x + nx2) / 2 + (-dy) * stepLen * (Math.random() - 0.5) * 0.9;
+        const my = (y + ny2) / 2 + (dx) * stepLen * (Math.random() - 0.5) * 0.9;
+        d += ` Q${mx.toFixed(1)} ${my.toFixed(1)} ${nx2.toFixed(1)} ${ny2.toFixed(1)}`;
+        x = nx2; y = ny2;
+        // 沿途分叉出细血管
+        if (depth < 2 && Math.random() < 0.55) {
+          const bl = stepLen * (0.4 + Math.random() * 0.7);
+          const bang = Math.atan2(dy, dx) + (Math.random() < 0.5 ? 1 : -1) * (0.5 + Math.random() * 0.8);
+          drawVein(x, y, Math.cos(bang), Math.sin(bang), bl,
+            width * 0.55, opacity * 0.7, depth + 1);
+        }
+      }
+      const p = document.createElementNS(NS, 'path');
+      p.setAttribute('d', d);
+      p.setAttribute('stroke-width', Math.max(0.8, width * baseW).toFixed(2));
+      p.setAttribute('opacity', opacity.toFixed(2));
+      group.appendChild(p);
+    };
+
+    // 从四条边（以及四角）向内生长：数量与长度随伤势加重
+    const clusters = Math.round(3 + sev * 6);
+    for (let i = 0; i < clusters; i++) {
+      // 随机选一条边
+      const side = Math.floor(Math.random() * 4);
+      let sx, sy, dirX, dirY;
+      if (side === 0) { sx = Math.random() * W; sy = 0; dirX = (Math.random() - 0.5) * 0.6; dirY = 1; }
+      else if (side === 1) { sx = Math.random() * W; sy = H; dirX = (Math.random() - 0.5) * 0.6; dirY = -1; }
+      else if (side === 2) { sx = 0; sy = Math.random() * H; dirX = 1; dirY = (Math.random() - 0.5) * 0.6; }
+      else { sx = W; sy = Math.random() * H; dirX = -1; dirY = (Math.random() - 0.5) * 0.6; }
+      // 朝屏幕中心略微修正方向
+      const toCx = cx - sx, toCy = cy - sy;
+      const tl = Math.hypot(toCx, toCy) || 1;
+      dirX = dirX * 0.55 + (toCx / tl) * 0.45;
+      dirY = dirY * 0.55 + (toCy / tl) * 0.45;
+      const dl = Math.hypot(dirX, dirY) || 1;
+      dirX /= dl; dirY /= dl;
+      // 长度：屏幕短边的 12%~32%，伤势越重越长
+      const len = Math.min(W, H) * (0.12 + Math.random() * 0.16) * (0.75 + sev * 0.7);
+      drawVein(sx, sy, dirX, dirY, len, 2.0 + Math.random() * 2.4 * (0.7 + sev),
+        0.5 + Math.random() * 0.45, 0);
+    }
+
+    svg.classList.remove('hidden');
+    void svg.offsetWidth;
+    svg.classList.add('show');
+    if (bloodTimer) clearTimeout(bloodTimer);
+    bloodTimer = setTimeout(() => {
+      svg.classList.remove('show');
+      setTimeout(() => {
+        if (!svg.classList.contains('show')) svg.classList.add('hidden');
+      }, 520);
+    }, 60);
+  },
+
+  /**
+   * 低血量持续暗黑血丝：hp < 15% 时显示，回血或死亡才消失。
+   * @param {boolean} on
+   */
+  setLowHpVeins(on) {
+    const el = node('lowHpVeins');
+    if (!el) return;
+    const want = !!on;
+    if (state.lowHpVeins === want) return;
+    state.lowHpVeins = want;
+    el.classList.remove('hidden');
+    el.classList.toggle('show', want);
+    if (!want) {
+      setTimeout(() => { if (!state.lowHpVeins) el.classList.add('hidden'); }, 520);
+    }
+  },
+
   showDamageFrom(angleRad) {
     const angle = num(angleRad, 0);
     // 优先：SVG 正态分布曲线扇形（指向明确，越靠前越红）
@@ -1132,6 +1244,10 @@ export const hud = {
     d.classList.remove('hidden');
     state.dead = true;
     setScopeInternal(false, state.sightType, state.zoomLabel);
+    // 死亡：清除低血血丝与短时血丝
+    this.setLowHpVeins(false);
+    const bv = node('bloodVeins');
+    if (bv) { bv.classList.remove('show'); bv.classList.add('hidden'); }
   },
   hideDeath() {
     const d = node('death');

@@ -139,6 +139,8 @@ const RULES = {
   shieldMax: 100,             // 钢制插板（护甲）上限：出生自带
   armorReduce: 0.8,           // 躯干减伤比例（保留给旧接口/说明）
   armorAbsorb: { body: 0.8, legs: 0.55, head: 0.3 },  // 各部位被命中时插板吸收比例
+  sniperBodyDamage: 0.9,      // 狙击穿甲弹躯干强制扣除最大生命的比例（不足则致死）
+  shotgunCQCRange: 12,        // 霰弹枪"近距离一击必杀"的距离（米）
   matchCountdown: 3,          // 真人按空格后 3 秒倒计时
   speedBoostMs: 8000,         // 加速道具持续
   speedBoostMult: 1.5,        // 加速移速倍率
@@ -1153,15 +1155,39 @@ function handleShoot(p, msg = {}) {
     const part = rec.head > 0 ? 'head' : (rec.legs > 0 && rec.body === 0 ? 'legs' : 'body');
     let dmg = rec.dmg;
     let absorbed = 0;
-    // 钢制插板：出生自带。任何部位被命中都会消耗插板（所以护甲一定会掉），
-    // 但吸收比例不同：躯干 80%（主防护）/ 腿 55% / 头 30%（爆头依然致命，只是插板崩边）。
-    const absorbRatio = (RULES.armorAbsorb && RULES.armorAbsorb[part]) || 0;
-    if (absorbRatio > 0 && (target.shield || 0) > 0) {
-      const toPlate = dmg * absorbRatio;
-      absorbed = Math.min(target.shield, toPlate);
-      target.shield = Math.max(0, target.shield - absorbed);
-      const overflow = toPlate - absorbed;   // 插板被打穿后的溢出部分
-      dmg = dmg * (1 - absorbRatio) + overflow;
+    // ===== 特殊弹药（无视/穿透护甲）=====
+    //  · 狙击枪：默认穿甲弹 —— 躯干强制扣 90% 最大生命（不足则致死），爆头直接击杀
+    //  · 霰弹枪：近距离（<= closeRange）一击必杀，无视护甲
+    const weaponId = p.weapon;
+    const isSniperAP = weaponId === 'sniper';
+    const isShotgunCQC = weaponId === 'shotgun' && rec.t <= (RULES.shotgunCQCRange ?? 12);
+    if (isShotgunCQC) {
+      // 近距离霰弹：无视护甲，直接致命
+      target.shield = 0;
+      dmg = Math.max(target.hp, (target.maxHp ?? W.maxHp) * 2);
+      absorbed = 0;
+    } else if (isSniperAP && part === 'head') {
+      // 穿甲爆头：一枪结束
+      target.shield = Math.max(0, (target.shield || 0) - (RULES.armorAbsorb?.head ?? 0.3) * dmg);
+      dmg = Math.max(target.hp, (target.maxHp ?? W.maxHp) * 2);
+      absorbed = 0;
+    } else if (isSniperAP && part === 'body') {
+      // 穿甲躯干：无视插板，强制扣除 90% 最大生命
+      const maxHp = target.maxHp ?? W.maxHp;
+      const forceDmg = Math.round(maxHp * (RULES.sniperBodyDamage ?? 0.9));
+      target.shield = Math.max(0, (target.shield || 0) - (RULES.armorAbsorb?.body ?? 0.8) * dmg * 0.5);
+      dmg = Math.max(dmg, forceDmg);
+      absorbed = 0;
+    } else {
+      // 普通弹药：钢制插板按部位吸收（躯干 80% / 腿 55% / 头 30%）
+      const absorbRatio = (RULES.armorAbsorb && RULES.armorAbsorb[part]) || 0;
+      if (absorbRatio > 0 && (target.shield || 0) > 0) {
+        const toPlate = dmg * absorbRatio;
+        absorbed = Math.min(target.shield, toPlate);
+        target.shield = Math.max(0, target.shield - absorbed);
+        const overflow = toPlate - absorbed;   // 插板被打穿后的溢出部分
+        dmg = dmg * (1 - absorbRatio) + overflow;
+      }
     }
     dmg = Math.max(0, Math.round(dmg));
     if (dmg > 0) target.hp = Math.max(0, target.hp - dmg);
