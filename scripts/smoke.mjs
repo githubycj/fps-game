@@ -289,7 +289,9 @@ console.log('== 服务器：钢制插板护甲 ==');
   victim.hp = 100; victim.shield = 100;
   attacker.lastFire = 0; ammoOf(attacker).mag = 15;
   handleShoot(attacker, aimAt(attacker, victim, 'head'));
-  check('爆头无视插板（保留爆头价值）', victim.shield === 100 && victim.hp <= 45, `hp=${victim.hp} armor=${victim.shield}`);
+  // 护甲按部位吸收：头 30% / 腿 55% / 躯干 80%。爆头只轻微消耗插板，伤害仍然很高。
+  check('爆头只轻微消耗插板（保留爆头价值）', victim.shield < 100 && victim.shield > 60 && victim.hp <= 65,
+    `hp=${victim.hp} armor=${victim.shield}`);
   respawn(victim);
   check('重生后重新装备满护甲', victim.shield === 100);
   players.delete(attacker.id); players.delete(victim.id);
@@ -537,9 +539,12 @@ try {
   check('debug 占点后据点归属 alpha', zA.owner === 'alpha');
 
   // 比赛结束
-  c1.send({ t: 'debug_score', team: 'alpha', value: 239 });
+  // 比赛结束（目标分数来自 shared/world.js 的 MATCH_SCORE_TARGET，当前 420）
+  const scoreTarget = c1.latestState().match.target;
+  c1.send({ t: 'debug_score', team: 'alpha', value: scoreTarget - 1 });
   const end = await c1.wait('match_end', 5000).catch(() => null);
-  check('比分达标触发 match_end', !!end && end.winner === 'alpha' && !!end.scores);
+  check('比分达标触发 match_end', !!end && end.winner === 'alpha' && !!end.scores,
+    `target=${scoreTarget}`);
 
   c2.ws.close();
   const left = await c1.wait('player_left', 4000).catch(() => null);
