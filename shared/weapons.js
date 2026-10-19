@@ -131,7 +131,7 @@ export const WEAPONS = {
     reloadTime: 2.9, reloadEmptyTime: 3.3, swapTime: 0.55, adsTime: 0.32,
     spread: 0.07, spreadMoving: 0.05, spreadSprint: 0.12, spreadPerShot: 0.02, spreadMax: 0.16, spreadRecover: 3.2,
     adsSpreadMult: 0.05, moveSpeedMult: 0.88,
-    sightType: 'scope', adsFov: 18, scopeMagnification: 6, reticle: 'mil',
+    sightType: 'scope', adsFov: 18, scopeMagnification: 3, reticle: 'cross-gap',
     // 射程覆盖整张地图对角线（≈198m），保证远距离（含地图两端）子弹不会被"忽略"
     range: 260, falloffStart: 100, falloffEnd: 200, falloffMin: 0.85,
     recoil: { pitch: 0.06, yaw: 0.012, ramp: 0.05, maxRamp: 4, recovery: 5, kick: 0.16, shake: 0.020 },

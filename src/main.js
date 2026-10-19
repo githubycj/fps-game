@@ -558,26 +558,7 @@ document.addEventListener('mouseup', (e) => {
 
 window.addEventListener('wheel', (e) => {
   if (!started || !local || !local.locked || !local.alive) return;
-  // 两套互不冲突的逻辑：
-  //  · 按住右键（开镜）时，滚轮 = 调整当前光学镜的放大倍率（狙击 3~10×）
-  //  · 未开镜时，滚轮 = 切换武器（原逻辑）
-  // 判定优先级：只要 ADS 处于激活（aiming 或 adsAmount > 0.35）就走变倍，
-  // 因此开镜状态下不会误切枪；松开右键后滚轮立刻恢复切枪。
-  const aiming = local.aiming || local.adsAmount > 0.35;
-  if (aiming) {
-    const dir = e.deltaY > 0 ? -1 : 1;      // 上滚 = 放大
-    const next = scope.adjustZoom ? scope.adjustZoom(dir) : null;
-    if (next != null) {
-      e.preventDefault();
-      const label = next + '×';
-      H.setOpticZoom(label);
-      lastHud.zoomLabel = label;
-      // 变倍环转动的机械声（复用切枪音效，音高略有区别）
-      if (S.switchWeapon) S.switchWeapon();
-      H.addToast('放大倍率 ' + label);
-    }
-    return;
-  }
+  // 滚轮只负责切换武器（变倍已改为固定倍率，不再占用滚轮）
   if (local.cycleWeapon(e.deltaY > 0 ? 1 : -1)) onWeaponChanged();
 }, { passive: false });
 
@@ -1254,10 +1235,8 @@ function updateHudPerFrame() {
   const aimingNow = local.adsAmount > 0.5;
   const scopeNow = local.scopeActive;
   if (lastHud.aiming !== aimingNow) { H.setAiming(aimingNow, w.sightType); lastHud.aiming = aimingNow; }
-  // 倍率标签：可变倍镜（狙击）显示当前倍率，红点/机瞄不显示
-  const zoomLabel = scope.zoomRange && !scope.zoomRange().fixed
-    ? (scope.zoomLevel || w.scopeMagnification || 1) + '×'
-    : (w.scopeMagnification > 1 ? w.scopeMagnification + '×' : '');
+  // 倍率标签：光学镜显示固定倍率，红点/机瞄不显示
+  const zoomLabel = w.scopeMagnification > 1 ? w.scopeMagnification + '×' : '';
   if (lastHud.scope !== scopeNow || lastHud.zoomLabel !== zoomLabel) {
     H.setScope(false, w.sightType, zoomLabel);   // 所有瞄具都用 PiP 镜片，不再全屏遮罩
     if (H.setOpticZoom) H.setOpticZoom(zoomLabel);

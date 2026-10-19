@@ -1017,10 +1017,8 @@ function buildSniper(b) {
     boltAxis: [0, 0, 1],
     // 狙击镜走与红点镜相同的真实光学 PiP（镜片圆内放大 + 光学分划）
     sprite: { color: 0xff4a32, size: LENS_R_SN * 2, position: [0, SC_Y, SC_EYE_Z], optic: true },
-    opticMagnification: 6,           // 默认倍率（可滚轮在 minZoom~maxZoom 间调整）
-    minZoom: 3,
-    maxZoom: 10,
-    zoomStep: 1,
+    // 固定 3 倍光学（狙击镜），镜内画面由 PiP 呈现，分划为「十字缺上竖」
+    opticMagnification: 3,
   };
 }
 
@@ -1204,8 +1202,10 @@ export function makeRedDotSprite(color = COL.dotRed, size = 0.010, opts = {}) {
   }
 
   // 大尺寸：圆形光学镜片平面（PiP 显示区）
+  // 用 PlaneGeometry 而不是 CircleGeometry：圆盘的扇形三角面在极小 UV 变化下
+  // 会在边缘产生放射状走样（镜窗里的"扇形斜纹"），方形平面 + shader 圆形遮罩更稳定。
   const radius = Math.max(0.004, size * 0.5);
-  const geo = new THREE.CircleGeometry(radius, 56);
+  const geo = new THREE.PlaneGeometry(radius * 2, radius * 2, 1, 1);
   // 占位材质；真正的光学 shader 由 ScopeController 绑定
   const material = new THREE.MeshBasicMaterial({
     color: 0xffffff, transparent: true, opacity: 0, depthWrite: false, depthTest: true,
@@ -1286,10 +1286,6 @@ export function createWeaponModel(kind, { firstPerson = false, simple = false } 
     sightPoint: toVec3(meta.sightPoint),
     scopeLens: meta.scopeLens ? toVec3(meta.scopeLens) : null,   // 狙击镜前镜片中心（PiP/遮罩定位）
     opticMagnification: meta.opticMagnification || 0,            // 镜片内放大倍率（0 = 不放大）
-    // 可变倍光学（狙击镜）：滚轮在 minZoom~maxZoom 间调整，step 为每格步进
-    minZoom: meta.minZoom || meta.opticMagnification || 1,
-    maxZoom: meta.maxZoom || meta.opticMagnification || 1,
-    zoomStep: meta.zoomStep || 1,
     rightGrip: toVec3(meta.rightGrip),
     leftGrip: toVec3(meta.leftGrip),
     boltAxis: meta.boltAxis ? toVec3(meta.boltAxis) : null,      // 拉栓/泵动方向（单位向量，+Z = 向后）

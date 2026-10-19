@@ -85,7 +85,6 @@ export class ScopeController {
     this.kind = 'pistol';
     this.adsVisual = 0;
     this.scopeActive = false;
-    this.zoomLevel = 1;          // 可变倍镜当前倍率（滚轮调整）
     this._adsPos = new THREE.Vector3();
     this._tmp = new THREE.Vector3();
     this._gripR = new THREE.Vector3(0, -0.01, -0.02);
@@ -206,10 +205,12 @@ export class ScopeController {
         uOpacity: { value: 0 },
         uAspect: { value: 1 },
         uReticleColor: { value: new THREE.Color(typeof hex === 'number' ? hex : 0xff3b2a) },
-        uBarrel: { value: isSniper ? 0.06 : src.uniforms.uBarrel.value },
+        uBarrel: { value: isSniper ? 0.0 : src.uniforms.uBarrel.value },
         uSoftness: { value: isSniper ? 0.03 : src.uniforms.uSoftness.value },
         uDotOffset: { value: new THREE.Vector2(0, 0) },
         uDotSize: { value: isSniper ? 0.012 : src.uniforms.uDotSize.value },
+        // 狙击镜用「十字缺上竖」分划，红点镜保持红点
+        uReticle: { value: isSniper ? 1 : 0 },
       },
       vertexShader: src.vertexShader,
       fragmentShader: src.fragmentShader,
@@ -232,7 +233,6 @@ export class ScopeController {
     const next = this.guns[kind] || null;
     for (const g of Object.values(this.guns)) g.visible = false;
     this.active = next;
-    this.resetZoom();
   }
 
   /**
@@ -245,7 +245,7 @@ export class ScopeController {
     const gun = this.active;
     if (!gun || !gun.userData) return 0;
     const lens = gun.userData.redDot;
-    const mag = this.zoomLevel || gun.userData.opticMagnification || 0;
+    const mag = gun.userData.opticMagnification || 0;
     if (!lens || !lens.userData || !lens.userData.isOpticLens || mag <= 1) return 0;
     const cfg = ADS_CONFIG[this.kind] || ADS_CONFIG.pistol;
     const rWorld = (lens.userData.lensRadius || 0.01) * gun.scale.x;
@@ -253,35 +253,13 @@ export class ScopeController {
     const halfAngRad = Math.atan2(rWorld, relief);
     const lensAngularDeg = (halfAngRad * 2 * 180) / Math.PI;
     // 镜内视场 = 镜片角直径 / 放大倍率（真正的"M 倍放大"）
-    // 高倍狙击（10×）时这个值会低到 2° 左右，下限必须留出余量，否则倍率变化会被截断。
     return Math.max(0.4, Math.min(60, lensAngularDeg / mag));
   }
 
-  /** 当前武器的变倍范围（无变倍时 min === max === 固定倍率） */
-  zoomRange() {
+  /** 当前瞄具的固定倍率（0 = 无光学放大） */
+  zoomLevelOf() {
     const gun = this.active;
-    const ud = (gun && gun.userData) || {};
-    const fixed = ud.opticMagnification || 1;
-    const min = ud.minZoom || fixed;
-    const max = ud.maxZoom || fixed;
-    return { min: Math.min(min, max), max: Math.max(min, max), step: ud.zoomStep || 1, fixed: min === max };
-  }
-
-  /** 滚轮调整倍率；返回新的倍率（无变倍或已到边界时返回 null） */
-  adjustZoom(dir) {
-    const r = this.zoomRange();
-    if (r.fixed) return null;
-    const cur = this.zoomLevel || this.active.userData.opticMagnification || r.min;
-    const next = Math.max(r.min, Math.min(r.max, cur + (dir > 0 ? r.step : -r.step)));
-    if (next === cur) return null;
-    this.zoomLevel = next;
-    return next;
-  }
-
-  /** 切换武器时把倍率重置为该武器的默认值 */
-  resetZoom() {
-    const gun = this.active;
-    this.zoomLevel = gun && gun.userData ? (gun.userData.opticMagnification || 1) : 1;
+    return (gun && gun.userData && gun.userData.opticMagnification) || 1;
   }
 
   /**

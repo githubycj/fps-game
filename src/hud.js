@@ -121,7 +121,7 @@ const state = {
   stance: 'stand',
   weapon: 'pistol', weaponName: '手枪', mag: 0, reserve: 0,
   reloading: false, reloadProgress: null,
-  ads: false, sightType: 'iron', scopeActive: false, zoomLabel: '6×',
+  ads: false, sightType: 'iron', scopeActive: false, zoomLabel: '3×',
   crosshairHidden: false, crosshairSize: 22,
   hitmarkerPart: null, hitmarkerKilled: false,
   lastDamageAngle: null,
@@ -844,7 +844,7 @@ export const hud = {
   /** 更新镜片内的光学分划颜色/大小（可变倍时红点/十字大小保持视觉一致） */
   setOpticZoom(label) {
     state.zoomLabel = String(label || '');
-    setText(node('scopeZoom'), state.zoomLabel || '6×');
+    setText(node('scopeZoom'), state.zoomLabel || '3×');
   },
 
   // ---------- 命中反馈 ----------
