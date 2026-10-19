@@ -21,8 +21,10 @@ const LENS_FRAG = `
   uniform float uOpacity;      // 开镜量 0..1
   uniform float uAspect;       // 镜片宽高比
   uniform vec3  uReticleColor;
-  uniform float uBarrel;       // 桶形畸变强度
+  uniform float uBarrel;       // 桶形畸变强度（镜片最外圈）
   uniform float uSoftness;     // 镜片边缘柔和度
+  uniform vec2  uDotOffset;    // 红点视差摆动（归一化镜片坐标，仅视觉）
+  uniform float uDotSize;      // 红点半径（归一化）
   varying vec2 vUv;
 
   // 圆内归一化坐标（半径 1 = 镜片边缘）
@@ -42,17 +44,19 @@ const LENS_FRAG = `
     float mask = 1.0 - smoothstep(1.0 - uSoftness, 1.0, r);
     if (mask <= 0.001) discard;
 
-    // ---------- 真实光学：镜内画面与主视角 1:1 对应 ----------
-    // 关键：不做任何整体缩放/放大。镜片上的每个像素都直接采样"同一视线方向"的场景，
-    // 这样玩家看到的目标大小与不开镜时完全一致，中心点就是准星，绝对不会影响命中判定。
-    // 只有在最外圈加入少量桶形畸变（真实凸透镜边缘的可见弯曲）。
+    // ---------- 镜片内放大（PiP）----------
+    // uScene 是用"主相机 FOV / 放大倍率"渲染的窄视场画面：
+    // 它在镜片圆内铺满显示 → 只有镜片里是放大的，镜片外的世界视角完全不变。
+    // 镜片圆心 = 相机正前方 = 弹道方向，所以放大不影响命中判定。
+    // 最外圈加入少量桶形畸变：真实凸透镜边缘可见弯曲，中心严格无畸变。
+    float rr = min(r, 1.0);
     float k = uBarrel;
-    vec2 q = p * (1.0 + k * r * r * r * r);   // 四次项：中心完全无畸变，仅边缘弯曲
-    // 非常轻微的外圈拉伸，形成"镜片边缘景物被压弯"的真实观感
-    q *= 1.0 + 0.045 * pow(r, 8.0);
+    vec2 q = p * (1.0 + k * rr * rr * rr * rr);
+    // 边缘极轻微的径向拉伸（鱼眼感），六次幂保证只影响最外圈
+    q *= 1.0 + 0.035 * pow(rr, 6.0);
 
-    // 边缘色散（真实镜片最外圈的彩色镶边，中心为零）
-    float disp = 0.008 * pow(r, 5.0);
+    // 边缘色散：仅最外圈（真实镜片彩色镶边）
+    float disp = 0.006 * pow(rr, 6.0);
     vec2 uvR = (q * (1.0 + disp)) * 0.5 + 0.5;
     vec2 uvG = q * 0.5 + 0.5;
     vec2 uvB = (q * (1.0 - disp)) * 0.5 + 0.5;
@@ -62,26 +66,26 @@ const LENS_FRAG = `
     col.g = texture2D(uScene, uvG).g;
     col.b = texture2D(uScene, uvB).b;
 
-    // 镜片渐晕：只有很靠边的一圈变暗（真实光学系统的边缘渐晕，不影响中心观察）
-    float vign = 1.0 - 0.30 * smoothstep(0.75, 1.02, r);
-    col *= vign;
+    // 镜片渐晕：只在最外圈轻微压暗，中心清晰
+    col *= 1.0 - 0.22 * smoothstep(0.82, 1.02, r);
 
-    // 抗反射镀膜：极淡冷色偏移 + 最边缘一圈偏红的反射光
-    float coat = smoothstep(0.88, 1.0, r);
-    col = mix(col, col * vec3(0.97, 0.995, 1.03), 0.25);
-    col += vec3(0.045, 0.015, 0.032) * coat * coat;
+    // 抗反射镀膜：极淡冷色偏移 + 最边缘一圈微红反射
+    float coat = smoothstep(0.90, 1.0, r);
+    col = mix(col, col * vec3(0.975, 0.995, 1.025), 0.22);
+    col += vec3(0.035, 0.012, 0.026) * coat * coat;
 
-    // 镀膜细微颗粒（避免"塑料感"）
-    col += (hash(vUv * 512.0) - 0.5) * 0.006;
+    // 镀膜细微颗粒
+    col += (hash(vUv * 512.0) - 0.5) * 0.005;
 
-    // ---------- 分划：单个红色发光点（真实 red dot，不是十字）----------
-    // 一个锐利的实心亮核 + 柔和光晕，在镜片正中心，与弹着点严格重合。
-    float dotCore = 1.0 - smoothstep(0.020, 0.030, r);
-    float dotGlow = 1.0 - smoothstep(0.030, 0.085, r);
-    float dotA = clamp(dotCore + dotGlow * 0.42, 0.0, 1.0) * uOpacity;
-    // 红色光点叠加在画面之上（加色），暗处也清晰可见
-    col = mix(col, uReticleColor, dotCore * uOpacity * 0.95);
-    col += uReticleColor * (dotGlow * 0.55 + dotCore * 0.65) * uOpacity;
+    // ---------- 红点：一个小亮点 + 极短光晕（真实 RDS 的成像）----------
+    // 视差：红点随人物移动/呼吸在镜窗内轻微摆动（uDotOffset），
+    // 但镜片中心（= 弹道方向）永远不变，所以瞄准点不会被影响。
+    vec2 dp = p - uDotOffset;
+    float dr = length(dp);
+    float core = 1.0 - smoothstep(uDotSize * 0.55, uDotSize, dr);
+    float glow = 1.0 - smoothstep(uDotSize, uDotSize * 2.6, dr);
+    col = mix(col, uReticleColor, core * uOpacity);
+    col += uReticleColor * (core * 0.85 + glow * 0.22) * uOpacity;
 
     // 最终透明度：只在开镜时显示
     float alpha = mask * uOpacity;
@@ -115,8 +119,10 @@ export function createOptics(renderer, scene) {
       uOpacity: { value: 0 },
       uAspect: { value: 1 },
       uReticleColor: { value: new THREE.Color(0xff3b2a) },
-      uBarrel: { value: 0.16 },
-      uSoftness: { value: 0.045 },
+      uBarrel: { value: 0.12 },
+      uSoftness: { value: 0.040 },
+      uDotOffset: { value: new THREE.Vector2(0, 0) },
+      uDotSize: { value: 0.030 },
     },
     vertexShader: LENS_VERT,
     fragmentShader: LENS_FRAG,
@@ -141,13 +147,12 @@ export function createOptics(renderer, scene) {
     cam.aspect = 1;
     cam.updateProjectionMatrix();
     cam.updateMatrixWorld();
-    // 第一人称武器/手臂不应出现在镜内画面里
+    // 第一人称武器/手臂/枪口光源都不应出现在镜内画面里：
+    // 它们都是主相机的子物体，这里统一隐藏再恢复（渲染一帧后立刻还原）。
     const hidden = [];
-    camera.children.forEach((c) => {
-      if (c.name === 'fpArms' || c.userData.__isWeaponHolder) {
-        if (c.visible) { hidden.push(c); c.visible = false; }
-      }
-    });
+    for (const c of camera.children) {
+      if (c && c.visible) { hidden.push(c); c.visible = false; }
+    }
     const prevTarget = renderer.getRenderTarget();
     const prevShadowAuto = renderer.shadowMap ? renderer.shadowMap.autoUpdate : null;
     try {
@@ -165,11 +170,17 @@ export function createOptics(renderer, scene) {
   function setOpacity(v) { material.uniforms.uOpacity.value = Math.max(0, Math.min(1, v)); }
   function setReticleColor(hex) { material.uniforms.uReticleColor.value.set(hex); }
   function setBarrel(v) { material.uniforms.uBarrel.value = v; }
+  // 红点视差摆动（归一化镜片坐标，纯视觉；镜片中心仍是弹道方向）
+  function setDotOffset(x, y) { material.uniforms.uDotOffset.value.set(x, y); }
+  function setDotSize(r) { material.uniforms.uDotSize.value = Math.max(0.006, r); }
 
   function dispose() {
     rt.dispose();
     material.dispose();
   }
 
-  return { material, rt, cam, render, setOpacity, setReticleColor, setBarrel, setEnabled, dispose };
+  return {
+    material, rt, cam, render,
+    setOpacity, setReticleColor, setBarrel, setDotOffset, setDotSize, setEnabled, dispose,
+  };
 }

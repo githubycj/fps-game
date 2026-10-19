@@ -1313,11 +1313,15 @@ function loop() {
     }
   }
 
-  // 真实光学：开镜时先用光学相机把场景（去掉第一人称手臂/武器）渲染到镜片贴图。
-  // 光学相机的 FOV 必须与主相机一致，这样镜片显示的就是"同一视野的放大像"，
-  // 中心点与准星严格对应，弹着点不受镜片影响；畸变只作用在镜片内部像素上。
+  // 真实光学（PiP）：只有带光学镜片的枪才需要额外渲染。
+  // 镜内视场 = 镜片角直径 ÷ 放大倍率 → 镜片圆内是真正的 M 倍放大像，镜片外仍是原视角；
+  // 镜片圆心与相机正前方重合，所以放大不会改变命中判定。
   if (local && !scope.scopeActive && local.adsAmount > 0.02) {
-    try { optics.render(camera, camera.fov); } catch (e) { if (!loop._opticsErr) { loop._opticsErr = true; errors.push('optics: ' + e.message); } }
+    const opticFov = scope.opticCameraFov();
+    if (opticFov > 0) {
+      try { optics.render(camera, opticFov); }
+      catch (e) { if (!loop._opticsErr) { loop._opticsErr = true; errors.push('optics: ' + e.message); } }
+    }
   }
 
   // 渲染（环境模块接管后期时走它的 render）

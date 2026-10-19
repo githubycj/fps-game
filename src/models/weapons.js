@@ -542,25 +542,42 @@ function buildSmg(b) {
   b.cylX(0.012, 0.020, [0, 0.123, 0.012], 'metal', COL.steelDark);
   b.box(0.004, 0.005, 0.004, [0, 0.135, 0.012], 'metal', COL.steelBlack);
 
-  // 红点镜：大窗口浮点式红点（镜片直径 105mm 观感），中间完全通透
-  b.box(0.040, 0.012, 0.052, [0, 0.1265, -0.095], 'metal', COL.steelDark);
-  b.cylX(0.004, 0.034, [0, 0.121, -0.072], 'metal', COL.steelWorn);
-  b.rbox(0.048, 0.024, 0.040, 0.004, [0, 0.132, -0.095], 'polymer', COL.polymerBlack, null, true);
-  // 上下两条横梁（决定镜窗高度 ≈ 0.106）
-  b.box(0.100, 0.006, 0.010, [0, 0.2020, -0.095], 'polymer', COL.polymerBlack);
-  b.box(0.100, 0.006, 0.010, [0, 0.0960, -0.095], 'polymer', COL.polymerBlack);
-  // 左右两根立柱（决定镜窗宽度 ≈ 0.094）
-  for (const sx of [-1, 1]) b.box(0.006, 0.112, 0.010, [sx * 0.0470, 0.149, -0.095], 'polymer', COL.polymerBlack);
-  // 镜筒前后圆环（托住光学镜片）
-  for (const z of [-0.126, -0.064]) b.torus(0.0500, 0.0030, [0, 0.149, z], 'metal', COL.steelDark);
-  // 镜片玻璃（真实光学由 optics shader 绘制，这里留一层极淡镀膜底色）
-  b.box(0.092, 0.104, 0.0010, [0, 0.149, -0.1255], 'glass', COL.glass);
-  b.box(0.090, 0.102, 0.0010, [0, 0.149, -0.0645], 'glass', COL.glass);
-  // 顶部/侧面调节旋钮
-  b.cylY(0.0090, 0.016, [0, 0.210, -0.095], 'metal', COL.steelWorn, 12);
-  b.cylY(0.0065, 0.007, [0, 0.220, -0.095], 'metal', COL.steelDark, 12);
-  b.cylX(0.0090, 0.016, [0.054, 0.149, -0.095], 'metal', COL.steelWorn, 12);
-  b.cylX(0.0070, 0.011, [-0.054, 0.149, -0.100], 'metal', COL.steelDark, 12);
+  // ============ 大窗口全息/红点镜（抬高镜线，保证镜窗大且不穿模）============
+  // 镜窗中心 y=0.237，内窗 208×208mm，镜片直径 200mm。
+  // 放大只在镜片内部由 optics.js 的 PiP 渲染完成，镜片外视角保持原样。
+  // 底座：导轨夹块 + 前后夹紧螺丝
+  b.rbox(0.054, 0.030, 0.062, 0.005, [0, 0.104, -0.095], 'metal', COL.steelDark, null, true);
+  b.box(0.046, 0.008, 0.050, [0, 0.1215, -0.095], 'metal', COL.steelWorn);
+  b.cylX(0.0050, 0.060, [0, 0.108, -0.078], 'metal', COL.steelWorn);     // 横穿夹紧螺栓
+  b.cylX(0.0072, 0.010, [0, 0.108, 0.030], 'metal', COL.steelDark);      // 螺栓头
+  // 立柱：把镜窗从底座抬到瞄准高度（左右两根）
+  for (const sx of [-1, 1]) {
+    b.rbox(0.017, 0.124, 0.044, 0.005, [sx * 0.080, 0.180, -0.095], 'polymer', COL.polymerBlack, null, true);
+    b.box(0.004, 0.092, 0.006, [sx * 0.0900, 0.178, -0.095], 'polymer', COL.polymerBlack);
+  }
+  b.box(0.180, 0.011, 0.042, [0, 0.1245, -0.095], 'polymer', COL.polymerBlack);   // 底部横梁
+  // 镜窗外框（上下横梁 + 左右立柱），内窗 208×208mm
+  b.rbox(0.232, 0.012, 0.040, 0.004, [0, 0.3470, -0.095], 'polymer', COL.polymerBlack, null, true);
+  b.rbox(0.232, 0.012, 0.040, 0.004, [0, 0.1270, -0.095], 'polymer', COL.polymerBlack, null, true);
+  for (const sx of [-1, 1]) {
+    b.rbox(0.012, 0.220, 0.040, 0.004, [sx * 0.1100, 0.237, -0.095], 'polymer', COL.polymerBlack, null, true);
+  }
+  // 前遮阳檐 + 后侧遮光罩（真实全息镜的防眩光结构）
+  b.box(0.232, 0.007, 0.034, [0, 0.3515, -0.128], 'polymer', COL.polymerBlack);
+  b.box(0.232, 0.006, 0.016, [0, 0.1275, -0.128], 'polymer', COL.polymerBlack);
+  // 镜片压圈（内窗内侧一圈细框，视觉上"托住"镜片）
+  b.box(0.208, 0.005, 0.005, [0, 0.3390, -0.062], 'metal', COL.steelWorn);
+  b.box(0.208, 0.005, 0.005, [0, 0.1350, -0.062], 'metal', COL.steelWorn);
+  for (const sx of [-1, 1]) b.box(0.005, 0.190, 0.005, [sx * 0.1015, 0.237, -0.062], 'metal', COL.steelWorn);
+  // 调节旋钮：顶部风偏、右侧高低、左侧电池仓
+  b.cylY(0.0125, 0.016, [0, 0.3620, -0.095], 'metal', COL.steelWorn, 14);
+  b.cylY(0.0090, 0.007, [0, 0.3730, -0.095], 'metal', COL.steelDark, 14);
+  b.cylX(0.0120, 0.016, [0.1210, 0.237, -0.095], 'metal', COL.steelWorn, 14);
+  b.cylX(0.0085, 0.010, [0.1310, 0.237, -0.095], 'metal', COL.steelDark, 14);
+  b.cylX(0.0130, 0.014, [-0.1205, 0.237, -0.095], 'metal', COL.steelDark, 14);
+  // 侧面细节：铭牌 + 两颗固定螺丝
+  b.box(0.0016, 0.015, 0.048, [0.1160, 0.2850, -0.095], 'metal', COL.steelWorn);
+  for (const sx of [-1, 1]) b.sphere(0.0036, [sx * 0.1100, 0.3350, -0.113], 'metal', COL.steelDark, 8);
 
   // 握把（含防滑纹）
   b.rbox(0.046, 0.095, 0.052, 0.010, grip, 'polymer', COL.polymerBlack, [A, 0, 0], true);
@@ -620,14 +637,17 @@ function buildSmg(b) {
 
   return {
     muzzle: [0, 0.078, -0.632],
-    sightPoint: [0, 0.149, -0.118],
+    // 镜线抬高到 0.237：为 200mm 大镜窗让出空间，同时靠加大眼距避免镜框/枪身穿模
+    sightPoint: [0, 0.237, -0.062],
     sightType: 'reddot',
     scopeLens: null,
     rightGrip: [0, -0.016, 0.042],
     leftGrip: [0, 0.038, -0.365],
     boltAxis: null,
-    // 光学镜片：直径 0.105（贴近目镜后约占视野 60%，符合真实红点的"大窗口"观感）
-    sprite: { color: COL.dotRed, size: 0.105, position: [0, 0.149, -0.072] },
+    // 光学镜片：直径 200mm，装在镜窗最后端（贴近眼睛的一侧）
+    sprite: { color: COL.dotRed, size: 0.200, position: [0, 0.237, -0.062] },
+    // 镜片内放大倍率（PiP：只在镜片圆内放大，镜片外视角不变）
+    opticMagnification: 2.0,
   };
 }
 
@@ -1193,6 +1213,7 @@ export function createWeaponModel(kind, { firstPerson = false, simple = false } 
     muzzle: toVec3(meta.muzzle),
     sightPoint: toVec3(meta.sightPoint),
     scopeLens: meta.scopeLens ? toVec3(meta.scopeLens) : null,   // 狙击镜前镜片中心（PiP/遮罩定位）
+    opticMagnification: meta.opticMagnification || 0,            // 镜片内放大倍率（0 = 不放大）
     rightGrip: toVec3(meta.rightGrip),
     leftGrip: toVec3(meta.leftGrip),
     boltAxis: meta.boltAxis ? toVec3(meta.boltAxis) : null,      // 拉栓/泵动方向（单位向量，+Z = 向后）

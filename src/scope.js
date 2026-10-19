@@ -24,10 +24,11 @@ const HIP_ROT = {
 
 // 开镜时眼睛到瞄具的距离（按枪型分别设置：机瞄要贴近照门才真实，红点/手枪稍远）
 const ADS_CONFIG = {
-  // 眼距（relief）= 眼睛到镜片的距离。红点/全息类瞄具眼睛贴近目镜后，
-  // 镜片会占满大部分视野——这是真实观感，也让"红点"足够大、好瞄准。
+  // 眼距（relief）= 眼睛到镜片的距离。
+  // 注意：不要把枪"怼到脸上"来放大镜片——那会让枪托/机匣穿过近裁剪面（看起来像穿模）。
+  // 这里保持 0.24~0.26m 的真实眼距，靠"镜片本身做大 + 镜片内 PiP 放大"来获得大视野。
   pistol: { relief: 0.26, scale: 0.90 },
-  smg: { relief: 0.13, scale: 0.90 },
+  smg: { relief: 0.27, scale: 0.90 },
   ak47: { relief: 0.23, scale: 0.95 },
   shotgun: { relief: 0.26, scale: 0.90 },
   sniper: { relief: 0.24, scale: 0.90 },
@@ -200,6 +201,8 @@ export class ScopeController {
         uReticleColor: { value: new THREE.Color(typeof hex === 'number' ? hex : 0xff3b2a) },
         uBarrel: { value: src.uniforms.uBarrel.value },
         uSoftness: { value: src.uniforms.uSoftness.value },
+        uDotOffset: { value: new THREE.Vector2(0, 0) },
+        uDotSize: { value: src.uniforms.uDotSize.value },
       },
       vertexShader: src.vertexShader,
       fragmentShader: src.fragmentShader,
@@ -218,6 +221,27 @@ export class ScopeController {
     const next = this.guns[kind] || null;
     for (const g of Object.values(this.guns)) g.visible = false;
     this.active = next;
+  }
+
+  /**
+   * 计算镜片内 PiP 相机应使用的 FOV（度）。
+   * 物理关系：镜片在眼睛看来占的角直径 = 2·atan(r_world / relief)，
+   * 要让镜片内的画面放大 M 倍，镜内呈现的世界视场角就必须 = 角直径 / M。
+   * 返回 0 表示当前武器没有光学镜片（不需要 PiP）。
+   */
+  opticCameraFov() {
+    const gun = this.active;
+    if (!gun || !gun.userData) return 0;
+    const lens = gun.userData.redDot;
+    const mag = gun.userData.opticMagnification || 0;
+    if (!lens || !lens.userData || !lens.userData.isOpticLens || mag <= 1) return 0;
+    const cfg = ADS_CONFIG[this.kind] || ADS_CONFIG.pistol;
+    const rWorld = (lens.userData.lensRadius || 0.01) * gun.scale.x;
+    const relief = Math.max(0.05, cfg.relief || 0.26);
+    const halfAngRad = Math.atan2(rWorld, relief);
+    const lensAngularDeg = (halfAngRad * 2 * 180) / Math.PI;
+    // 镜内视场 = 镜片角直径 / 放大倍率（11.4° 一类的小 FOV，才是真正的"M 倍放大"）
+    return Math.max(4, Math.min(60, lensAngularDeg / mag));
   }
 
   /**
@@ -325,15 +349,21 @@ export class ScopeController {
     if (dot) {
       dot.visible = ads > 0.02 && !this.scopeActive;
       if (dot.userData && dot.userData.isOpticLens) {
-        // 镜片在枪体 local 坐标中贴到镜框上，并用 ads 控制透明度
         const mat = dot.material;
         if (mat && mat.uniforms && mat.uniforms.uOpacity) {
           mat.uniforms.uOpacity.value = Math.min(1, Math.max(0, (ads - 0.05) / 0.85));
+
+          // ---- 红点视差摆动 ----
+          // 真实红点：镜片里的亮点会随呼吸/走动在窗口内轻微游走（视差），
+          // 但镜片中心（= 相机正前方 = 弹道方向）恒定不变，所以瞄准点不受影响。
+          const moveAmt = Math.min(1, (p.speed || 0) / WORLD.sprintSpeed);
+          const breath = Math.sin(t * 1.7) * 0.5 + Math.sin(t * 3.1 + 1.2) * 0.28;
+          const walkX = Math.cos(p.bobPhase || 0) * 0.012 * moveAmt;
+          const walkY = Math.abs(Math.sin(p.bobPhase || 0)) * 0.010 * moveAmt;
+          const swayX = (breath * 0.008 + walkX) * (1 - ads * 0.25);
+          const swayY = (Math.sin(t * 2.3 + 0.7) * 0.007 + walkY) * (1 - ads * 0.25);
+          mat.uniforms.uDotOffset.value.set(swayX, swayY);
         }
-        // 镜片直径随开镜轻微放大（10%），更接近"把眼睛凑到目镜后"的观感
-        const baseR = dot.userData.lensRadius || 0.011;
-        dot.scale.setScalar(1 + ads * 0.12);
-        void baseR;
       }
     }
 
