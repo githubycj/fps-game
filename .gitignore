@@ -11,3 +11,4 @@ death_screen.png
 .npm-cache/
 .tmp/
 .vite-cache/
+.dsh-ops-*.lock
