@@ -1656,7 +1656,11 @@ function createBot(teamArg, roleArg) {
   const primary = roleCfg.weapon;
   const owned = { pistol: true };
   const ammo = {};
-  for (const id of [primary, 'pistol']) {
+  // 主武器 + 副武器（altWeapon，例如精确射手的沙漠之鹰）
+  const loadoutIds = [primary];
+  if (roleCfg.altWeapon) loadoutIds.push(roleCfg.altWeapon);
+  loadoutIds.push('pistol');
+  for (const id of loadoutIds) {
     if (!isWeaponId(id)) continue;
     owned[id] = true;
     ammo[id] = fullAmmo(id);

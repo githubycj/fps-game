@@ -8,7 +8,7 @@
 ![郊区战场](screenshots/village.png)
 
 > 截图来自本机 headless Chrome（软件渲染 SwiftShader，低帧率下仍可运行；真实 GPU 上会开启阴影、Bloom 与满密度草地）。
-> 更多截图见 `screenshots/`：`menu.png`、`warmup.png`、`hills.png`、`characters.png`、`scope.png`、`ads-pistol.png`、`ads-ak47.png`、`smg-reddot.png`、`dmg-indicator.png`。
+> 更多截图见 `screenshots/`：`menu.png`、`warmup.png`、`hills.png`、`characters.png`、`scope.png`、`ads-pistol.png`、`ads-ak47.png`、`smg-reddot.png`、`dmg-indicator.png`、`m416.png`、`m416-ads.png`、`deagle.png`、`deagle-ads.png`。
 
 ## 快速开始
 
@@ -144,6 +144,10 @@ npm start            # 服务器监听 3001，同时托管前端与 WebSocket
 | 突击步枪 | 24 / 59 / 19 | 全自动 0.10s | 30 | 120 | 中距全能，需压枪 |
 | 霰弹枪 | 11×8 弹丸 | 泵动 0.85s | 6 | 30 | 贴脸爆发，远距衰减到 25% |
 | 狙击枪 | 95 / 228 / 66 | 栓动 1.3s | 5 | 25 | 6 倍镜，爆头必杀 |
+| **M416** | 21 / 53 / 17 | 全自动 0.086s | 30 | 150 | AR 平台，射速更快、后坐更稳、垂直为主易压枪 |
+| **沙漠之鹰** | 62 / 143 / 47 | 半自动 0.36s | 7 | 35 | .50 大口径，2 枪躯干 / 1 枪爆头，后坐巨大 |
+
+> 新增两把枪（M416 / 沙漠之鹰）在 A、C 据点外侧的武器箱刷新；滚轮可在已持有武器间切换。
 
 后坐力按武器独立（可学习压枪）；开镜/蹲下收紧散布，移动/冲刺放大散布；距离衰减与部位倍率前后端一致。
 

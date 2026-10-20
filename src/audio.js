@@ -415,6 +415,32 @@ const GUNS = {
     bolt: 0.5,
     tailDur: 1.65,
   },
+  // M416：5.56 小口径，比 AK 更清脆、瞬态更快、低频更薄（连发时听感更"紧"）
+  m416: {
+    volume: 0.9,
+    base: 140,
+    crackFreq: 3500,
+    tailHint: 0.46,
+    wet: 0.19,
+    crack: { dur: 0.052, gain: 0.55, f1: 2100, q: 0.95 },
+    body: { type: 'sawtooth', f0: 300, f1: 86, dur: 0.10, gain: 0.30 },
+    thump: { f1: 66, dur: 0.13, gain: 0.48 },
+    mech: { t: 0.010, freq: 2600, gain: 0.22 },
+    tailDur: 0.72,
+  },
+  // 沙漠之鹰：.50 大口径，爆裂感极强、低频轰击厚、拖尾长
+  deagle: {
+    volume: 1.15,
+    base: 98,
+    crackFreq: 2500,
+    tailHint: 0.9,
+    wet: 0.33,
+    crack: { dur: 0.085, gain: 0.74, f1: 1400, q: 0.65 },
+    body: { type: 'sawtooth', f0: 230, f1: 58, dur: 0.24, gain: 0.50 },
+    thump: { f1: 46, dur: 0.30, gain: 0.92 },
+    mech: { t: 0.018, freq: 1700, gain: 0.26 },
+    tailDur: 1.25,
+  },
 };
 
 // ---------- 枪声 ----------
@@ -560,7 +586,7 @@ function _dryFire() {
 }
 
 // 换弹单步机械音：step 0 卸弹匣 / 1 插弹匣 / 2 拉栓上膛 / 3 单发装填或泵动
-const STEP_PITCH = { pistol: 1.15, smg: 1.2, ak47: 0.95, shotgun: 0.8, sniper: 0.9 };
+const STEP_PITCH = { pistol: 1.15, smg: 1.2, ak47: 0.95, shotgun: 0.8, sniper: 0.9, m416: 1.0, deagle: 1.05 };
 
 function _reloadStepAt(kind, step, t) {
   if (!bus) return;
@@ -595,6 +621,10 @@ const RELOAD_SEQ = {
   ak47: [[0, 0], [1, 0.5], [2, 0.88]],
   shotgun: [[3, 0.05], [3, 0.24], [3, 0.42], [2, 0.6]],
   sniper: [[0, 0.1], [1, 0.5], [2, 1.0], [2, 1.26]],
+  // M416：AR 换弹干净利落，弹匣先落再推到位
+  m416: [[0, 0], [1, 0.46], [2, 0.82]],
+  // 沙漠之鹰：大弹匣沉重，插入后有明显锁定声
+  deagle: [[0, 0.02], [1, 0.42], [2, 0.78]],
 };
 
 function _reload(kind) {

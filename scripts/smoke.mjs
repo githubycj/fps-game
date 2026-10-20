@@ -98,8 +98,11 @@ console.log('== 地形 / 物理（共享） ==');
 
 console.log('== 武器数值 ==');
 {
-  check('5 把武器数据完整', Object.keys(WEAPONS).length === 5 &&
-    Object.values(WEAPONS).every((w) => w.damage > 0 && w.magSize > 0 && w.fireInterval > 0 && w.reloadTime > 0 && w.range > 0));
+  check('7 把武器数据完整', Object.keys(WEAPONS).length === 7 &&
+    Object.values(WEAPONS).every((w) => w.damage > 0 && w.magSize > 0 && w.fireInterval > 0 && w.reloadTime > 0 && w.range > 0),
+    Object.keys(WEAPONS).join(','));
+  check('新枪 M416 / 沙漠之鹰 已注册', isWeaponId('m416') && isWeaponId('deagle') &&
+    WEAPONS.m416.fireMode === 'auto' && WEAPONS.deagle.fireMode === 'semi');
   check('口径/定位差异（射速）', weaponOf('smg').fireInterval < weaponOf('ak47').fireInterval &&
     weaponOf('ak47').fireInterval < weaponOf('sniper').fireInterval);
   check('RPM 计算合理', rpmOf(weaponOf('ak47')) > 500 && rpmOf(weaponOf('sniper')) < 60);

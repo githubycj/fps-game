@@ -25,13 +25,16 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 // 0. 常量
 // ---------------------------------------------------------------------------
 
-export const WEAPON_KIND_LIST = ['pistol', 'smg', 'ak47', 'shotgun', 'sniper'];
+export const WEAPON_KIND_LIST = ['pistol', 'smg', 'ak47', 'shotgun', 'sniper', 'm416'];
 
 // 第一人称整体缩放：枪身不穿帮、不挡准心（狙击长枪略小）
 const FPS_SCALE = {
   pistol: 0.75,
+  // 沙漠之鹰体量比普通手枪大 35%，缩放略小才不会在视野里顶到镜头
+  deagle: 0.71,
   smg: 0.74,
   ak47: 0.72,
+  m416: 0.72,
   shotgun: 0.70,
   sniper: 0.66,
 };
@@ -482,6 +485,142 @@ function buildPistol(b) {
     scopeLens: null,
     rightGrip: [0, -0.009, -0.002],
     leftGrip: [-0.014, -0.027, -0.010],
+    boltAxis: null,
+    sprite: null,
+  };
+}
+
+// ---- 5.1b 沙漠之鹰（.50 AE 大口径半自动手枪）----
+// 与 5.1 手枪的差异就是“辨识度”的来源：
+//   · 体量：全长 0.280m、宽 0.038m（普通手枪的 1.35 倍长 / 1.25 倍宽），套筒截面接近正方形；
+//   · 固定枪管：枪管不随套筒运动，口部有加粗衬套 + 多边形棱面 + 六边形膛口；
+//   · 导气式 + 回转闭锁：套筒顶部三条贯穿式散热槽，尾部大面积防滑齿；
+//   · 枪管正上方一整条皮卡汀尼导轨（Deagle 标志），瞄具因此比普通手枪高约 2cm；
+//   · 三角直握把（-0.28rad）+ 菱形防滑纹 + 外露大击锤 + 方形大护圈 + 单排直弹匣。
+function buildDeagle(b) {
+  const A = -0.28;                  // 握把后倾角（比普通手枪更直 → 三角形轮廓）
+  const grip = [0, -0.004, 0.012];  // 握把中心（≈ 右手握持中心 = 原点）
+  const BAR_Y = 0.078;              // 枪管轴线高度
+  const W = 0.038;                  // 枪身宽度
+  const SIGHT_Y = 0.1205;           // 机械瞄具光轴（照门缺口底 / 准星顶）
+  const SLIDE_TOP = 0.102;          // 套筒顶面
+
+  // ============ 套筒（导气式 + 回转闭锁）：接近方形的粗壮截面 ============
+  b.rbox(W, 0.038, 0.128, 0.0045, [0, 0.0745, -0.032], 'metal', COL.steel, null, true);
+  b.rbox(0.030, 0.013, 0.128, 0.0030, [0, 0.0955, -0.032], 'metal', COL.steel, null, true);   // 顶部平台（切角）
+  b.box(W - 0.003, 0.026, 0.007, [0, 0.0755, 0.029], 'metal', COL.steelDark);                 // 尾板
+  // 尾部 3 道 + 前部 2 道防滑齿（比普通手枪更宽更厚）
+  for (let i = 0; i < 3; i++) {
+    b.box(W + 0.0014, 0.030, 0.0038, [0, 0.0755, 0.004 - i * 0.0080], 'metal', COL.steelWorn);
+  }
+  for (let i = 0; i < 2; i++) {
+    b.box(W + 0.0008, 0.024, 0.0032, [0, 0.0755, -0.082 - i * 0.0076], 'metal', COL.steelWorn);
+  }
+  // 顶部贯穿式散热槽（3 条纵向凹槽）
+  for (const dx of [-0.0105, 0, 0.0105]) {
+    b.box(0.0032, 0.0018, 0.086, [dx, SLIDE_TOP - 0.0002, -0.046], 'metal', COL.steelBlack);
+  }
+  // 套筒棱边磨亮（使用痕迹）
+  for (const sx of [-1, 1]) {
+    b.box(0.0014, 0.0018, 0.124, [sx * 0.0148, SLIDE_TOP - 0.0004, -0.032], 'metal', COL.steelWorn);
+  }
+  // 抛壳口（.50 AE 弹壳巨大 → 开口又长又高）+ 抛壳挺
+  addEjectionPort(b, { x: 0.0176, y: 0.082, z: -0.055, h: 0.021, d: 0.050, bolt: false });
+  b.box(0.005, 0.006, 0.026, [0.0178, 0.0930, -0.028], 'metal', COL.steelWorn);
+
+  // ============ 外露式大击锤（套筒尾部，宽圆头击锤）============
+  b.box(0.014, 0.030, 0.010, [0, 0.086, 0.036], 'metal', COL.steelDark, [0.20, 0, 0], true);
+  b.rbox(0.021, 0.014, 0.024, 0.0055, [0, 0.1030, 0.043], 'metal', COL.steel, [0.46, 0, 0], true);
+  b.cylX(0.0038, 0.022, [0, 0.0720, 0.030], 'metal', COL.steelWorn);
+
+  // ============ 保险拨杆（套筒后部两侧，左右各一）============
+  for (const sx of [-1, 1]) {
+    b.box(0.0045, 0.011, 0.026, [sx * 0.0196, 0.087, 0.012], 'metal', COL.steelDark);
+    b.cylX(0.0044, 0.0045, [sx * 0.0206, 0.087, 0.012], 'metal', COL.steelWorn);
+  }
+
+  // ============ 机械瞄具：方形缺口照门（尾部）+ 高准星（枪口端）============
+  b.box(0.027, 0.009, 0.019, [0, 0.1070, 0.020], 'metal', COL.steelDark, null, true);          // 照门底座
+  for (const sx of [-1, 1]) {
+    b.box(0.0085, 0.0140, 0.014, [sx * 0.0092, 0.1160, 0.020], 'metal', COL.steelDark);        // 方形缺口两翼
+  }
+  b.box(0.0110, 0.0030, 0.013, [0, 0.1190, 0.020], 'metal', COL.steelBlack);                   // 缺口底面（= 光轴高度）
+
+  // ============ 固定枪管（多边形截面 + 加粗衬套 + 六边形膛口）============
+  b.rbox(0.034, 0.038, 0.120, 0.0035, [0, 0.077, -0.140], 'metal', COL.steelBright, null, true);
+  b.rbox(0.026, 0.009, 0.120, 0.0025, [0, 0.0985, -0.140], 'metal', COL.steel, null, true);   // 枪管顶面平台（导轨座）
+  for (const sx of [-1, 1]) {
+    b.box(0.012, 0.012, 0.120, [sx * 0.0132, 0.0900, -0.140], 'metal', COL.steelBright, [0, 0, sx * 0.785]);
+  }
+  b.box(0.022, 0.012, 0.038, [0, 0.060, -0.104], 'metal', COL.steelDark);                     // 导气室（导气式）
+  // 顶部皮卡汀尼导轨（Deagle 标志：导轨长在固定枪管上）
+  addRail(b, { y: 0.105, z: -0.136, length: 0.082, width: 0.024, teeth: 5 });
+  // 枪口加粗衬套 + 多边形膛口
+  b.rbox(0.036, 0.042, 0.018, 0.0030, [0, 0.078, -0.201], 'metal', COL.steelDark, null, true);
+  b.cylZ2(0.0196, 0.0176, 0.010, [0, BAR_Y, -0.2135], 'metal', COL.steelWorn, 20);
+  b.cylZ(0.0076, 0.005, [0, BAR_Y, -0.2168], 'metal', COL.steelBlack, 16);
+  b.cylZ(0.0108, 0.0035, [0, BAR_Y, -0.2176], 'metal', COL.steelBlack, 6);                     // 六边形膛口（多边形膛线）
+  // 高准星（导轨把瞄具抬高，所以准星片很高）
+  b.box(0.014, 0.009, 0.018, [0, 0.1055, -0.186], 'metal', COL.steelDark, null, true);
+  b.box(0.0048, 0.017, 0.009, [0, 0.1125, -0.186], 'metal', COL.steelDark);
+  b.box(0.0048, 0.0018, 0.009, [0, 0.1205, -0.186], 'metal', COL.steelWorn);
+
+  // ============ 机匣（固定枪管的承力座）============
+  b.rbox(0.036, 0.032, 0.148, 0.0045, [0, 0.046, -0.026], 'metal', COL.steelDark, null, true);
+  b.rbox(0.034, 0.024, 0.056, 0.0040, [0, 0.048, -0.116], 'metal', COL.steelDark, null, true); // 防尘盖
+  b.box(0.022, 0.005, 0.048, [0, 0.0335, -0.116], 'metal', COL.steelDark);                     // 下挂导轨
+  for (let i = 0; i < 2; i++) b.box(0.026, 0.004, 0.007, [0, 0.0300, -0.100 - i * 0.017], 'metal', COL.steel);
+  b.rbox(0.032, 0.014, 0.026, 0.005, [0, 0.050, 0.034], 'metal', COL.steelDark, [-0.14, 0, 0], true); // 海狸尾（短而宽，不超出套筒尾端）
+  b.cylX(0.0036, 0.040, [0, 0.052, -0.006], 'metal', COL.steelWorn);                           // 机匣销钉
+
+  // ============ 扳机护圈（粗大、接近方形）============
+  addTriggerGroup(b, {
+    y: 0.020, z: -0.055, width: 0.026,
+    outerW: 0.086, outerH: 0.058, holeW: 0.064, holeH: 0.038,
+    guardMat: 'metal', guardColor: COL.steelDark,
+  });
+  b.box(0.028, 0.014, 0.008, [0, -0.002, -0.100], 'metal', COL.steelDark);                     // 护圈前下缘方角
+
+  // ============ 三角直握把（更粗、更直）+ 菱形防滑纹 ============
+  b.rbox(0.036, 0.108, 0.056, 0.010, grip, 'metal', COL.steelDark, [A, 0, 0], true);
+  b.rbox(0.034, 0.098, 0.011, 0.005, gripPoint(grip, A, 0, 0.002, 0.027), 'metal', COL.steelDark, [A, 0, 0], true);  // 后背带
+  b.rbox(0.032, 0.092, 0.010, 0.004, gripPoint(grip, A, 0, -0.002, -0.027), 'polymer', COL.polymerBlack, [A, 0, 0]); // 前握把片
+  for (let i = 0; i < 3; i++) {
+    b.box(0.030, 0.006, 0.010, gripPoint(grip, A, 0, 0.026 - i * 0.024, -0.031), 'polymer', COL.polymerGray, [A, 0, 0]);
+  }
+  // 两侧握把片 + 菱形防滑纹（绕 X 轴 45° 的小方片 → 菱形）
+  for (const sx of [-1, 1]) {
+    b.rbox(0.0040, 0.084, 0.044, 0.0018, gripPoint(grip, A, sx * 0.0172, 0, 0), 'polymer', COL.polymerBlack, [A, 0, 0], true);
+    for (let r = 0; r < 2; r++) {
+      for (let c = 0; c < 2; c++) {
+        b.box(0.0022, 0.0060, 0.0060,
+          gripPoint(grip, A, sx * 0.0184, 0.024 - r * 0.026, -0.011 + c * 0.022),
+          'polymer', COL.polymerGray, [A + Math.PI / 4, 0, 0]);
+      }
+    }
+  }
+  addScrew(b, [0.0200, 0.002, -0.014], { axis: 'x', r: 0.0036, len: 0.007 });                   // 握把螺钉
+
+  // ============ 单排直弹匣（底部加厚底板）============
+  b.rbox(0.040, 0.013, 0.062, 0.0030, gripPoint(grip, A, 0, -0.057, 0.002), 'metal', COL.steelDark, [A, 0, 0], true);
+  b.box(0.030, 0.008, 0.050, gripPoint(grip, A, 0, -0.050, 0.002), 'metal', COL.steelBlack, [A, 0, 0]);
+  b.box(0.036, 0.004, 0.056, gripPoint(grip, A, 0, -0.0645, 0.002), 'metal', COL.steelWorn, [A, 0, 0]);
+  // 弹匣卡笋 / 空仓挂机杆
+  b.cylX(0.0060, 0.010, [0.0192, 0.038, -0.014], 'metal', COL.steelBright);
+  b.box(0.005, 0.008, 0.034, [-0.0192, 0.063, -0.024], 'metal', COL.steelWorn);
+
+  // ============ 使用痕迹：套筒/枪管棱边磨亮 ============
+  for (const sx of [-1, 1]) {
+    b.box(0.0012, 0.0022, 0.120, [sx * 0.0192, 0.0912, -0.032], 'metal', COL.steelWorn);
+  }
+
+  return {
+    muzzle: [0, BAR_Y, -0.219],
+    sightPoint: [0, SIGHT_Y, -0.020],
+    sightType: 'iron',
+    scopeLens: null,
+    rightGrip: [0, -0.008, 0.016],
+    leftGrip: [-0.017, -0.030, 0.004],
     boltAxis: null,
     sprite: null,
   };
@@ -1010,12 +1149,195 @@ function buildSniper(b) {
   };
 }
 
+// ---- 5.6 M416 突击步枪（AR 平台：短行程活塞 + 四面皮卡汀尼导轨 + 伸缩托）----
+// 与 AK 的辨识度：平顶分体机匣（上/下机匣 + 抛壳口防尘盖 + 辅助推机柄）、
+// 八边形自由浮动护木（四面导轨 + M-LOK 槽 + 散热孔阵列）、5.56 直弹匣、
+// AR 手枪握把、缓冲管伸缩托（可调托板 + 托腮）、鸟笼消焰器、翻起式觇孔照门 + A 形准星。
+// 尺度：枪口 z = -0.963（全长 ≈ 0.86m，与 AK 的 -0.955 / 0.88m 同一尺度体系），
+//       枪管轴线 y = 0.100，机匣/护木顶导轨共面（齿顶 y = 0.1415），机械瞄具光轴 y = 0.155。
+function buildM416(b) {
+  const A = -0.35;                     // AR 手枪握把后倾角（比 AK 更陡）
+  const BORE = 0.100;                  // 枪管轴线高度
+  const RAIL_Y = 0.1335;               // 顶导轨基准（底座 0.1305~0.1365，齿顶 0.1415）
+  const SIGHT_Y = 0.155;               // 机械瞄具光轴：照门觇孔中心 = 准星柱尖
+  const grip = [0, -0.006, 0.042];
+  const HG_R = 0.026;                  // 护木外接圆半径
+  const HG_FLAT = HG_R * Math.cos(Math.PI / 8);   // 八边形平面到轴心距离
+
+  // ===== 1. 上机匣（平顶 + 抛壳口 + 防尘盖 + 辅助推机柄 + 拉机柄）=====
+  b.rbox(0.042, 0.060, 0.260, 0.006, [0, 0.100, -0.075], 'metal', COL.steel, null, true);
+  // 机匣顶部：一整条长导轨（与护木导轨共面、间距只隔一个护木夹箍，形成 AR 的连续平顶）
+  addRail(b, { y: RAIL_Y, z: -0.075, length: 0.240, teeth: 6 });
+  b.box(0.0432, 0.0032, 0.246, [0, 0.0715, -0.075], 'metal', COL.steelBlack);            // 上下机匣分界缝
+  b.box(0.034, 0.008, 0.024, [0, 0.1235, 0.058], 'metal', COL.steelDark, null, true);    // 拉机柄（T 形）
+  b.box(0.010, 0.013, 0.010, [-0.019, 0.1235, 0.064], 'metal', COL.steelWorn);           // 拉柄锁扣
+  addEjectionPort(b, { x: 0.0212, y: 0.110, z: -0.086, h: 0.020, d: 0.060 });
+  b.cylZ(0.0022, 0.062, [0.0206, 0.0995, -0.086], 'metal', COL.steelWorn, 10);           // 防尘盖铰轴
+  b.box(0.0032, 0.020, 0.058, [0.0232, 0.0925, -0.086], 'metal', COL.steel, [0, 0, -0.45], true);  // 防尘盖（半开）
+  b.box(0.008, 0.012, 0.014, [0.0225, 0.118, -0.046], 'metal', COL.steel, [0, 0, 0.45]); // 抛壳导板
+  b.cylX(0.0072, 0.014, [0.0265, 0.113, 0.020], 'metal', COL.steelDark, 14);             // 辅助推机柄
+  b.cylX(0.0080, 0.005, [0.0345, 0.113, 0.020], 'metal', COL.steelWorn, 14);
+
+  // ===== 2. 下机匣（弹匣井 + 扳机组 + 快慢机 + 卡笋 + 销钉）=====
+  b.rbox(0.040, 0.048, 0.230, 0.005, [0, 0.056, -0.062], 'metal', COL.steelDark, null, true);
+  b.rbox(0.036, 0.056, 0.074, 0.004, [0, 0.026, -0.082], 'metal', COL.steelDark, null, true);  // 弹匣井
+  b.box(0.040, 0.008, 0.080, [0, 0.001, -0.082], 'metal', COL.steelDark);                // 井口喇叭
+  b.box(0.010, 0.050, 0.012, [0, 0.026, -0.121], 'metal', COL.steel);                    // 井前加强筋
+  addTriggerGroup(b, {
+    y: 0.018, z: -0.010, width: 0.024,
+    outerW: 0.092, outerH: 0.056, holeW: 0.068, holeH: 0.034,
+    guardMat: 'metal', guardColor: COL.steelDark,
+  });
+  // 快慢机（左侧：保险 / 单发 / 连发 三档刻线）
+  b.cylX(0.0068, 0.010, [-0.0205, 0.074, -0.008], 'metal', COL.steelWorn, 14);
+  b.box(0.0045, 0.007, 0.028, [-0.0245, 0.072, -0.020], 'metal', COL.steelWorn, [0.35, 0, 0]);
+  for (let i = 0; i < 3; i++) {
+    b.box(0.0022, 0.0022, 0.006, [-0.0198, 0.086, 0.004 - i * 0.013], 'metal', COL.steelWorn);
+  }
+  // 弹匣卡笋（右侧）+ 空仓挂机（左侧）
+  b.cylX(0.0055, 0.009, [0.0195, 0.062, -0.056], 'metal', COL.steelWorn, 12);
+  b.box(0.0035, 0.011, 0.011, [0.0225, 0.062, -0.056], 'metal', COL.steelDark);
+  b.box(0.005, 0.011, 0.024, [-0.0222, 0.066, -0.038], 'metal', COL.steelWorn);
+  b.box(0.006, 0.015, 0.009, [-0.0245, 0.060, -0.048], 'metal', COL.steelWorn);
+  // 机匣销钉（前铰销 / 后分解销）
+  b.cylX(0.0044, 0.043, [0, 0.044, -0.148], 'metal', COL.steelWorn, 12);
+  b.cylX(0.0044, 0.043, [0, 0.048, 0.034], 'metal', COL.steelWorn, 12);
+
+  // ===== 3. AR 手枪握把（后倾 + 防滑纹 + 托底 + 海狸尾）=====
+  b.rbox(0.030, 0.098, 0.044, 0.008, grip, 'polymer', COL.polymerBlack, [A, 0, 0], true);
+  b.rbox(0.026, 0.090, 0.008, 0.003, gripPoint(grip, A, 0, -0.002, 0.024), 'polymer', COL.polymerGray, [A, 0, 0]);
+  b.rbox(0.024, 0.072, 0.008, 0.003, gripPoint(grip, A, 0, 0.008, -0.021), 'polymer', COL.polymerBlack, [A, 0, 0]);
+  for (let i = 0; i < 3; i++) {
+    b.box(0.031, 0.005, 0.010, gripPoint(grip, A, 0, 0.026 - i * 0.020, -0.019),
+      'polymer', COL.polymerGray, [A, 0, 0]);
+  }
+  for (const sx of [-1, 1]) {
+    b.box(0.0022, 0.034, 0.030, gripPoint(grip, A, sx * 0.0152, 0.004, 0),
+      'polymer', COL.polymerGray, [A, 0, 0]);
+  }
+  b.rbox(0.032, 0.010, 0.048, 0.003, gripPoint(grip, A, 0, -0.052, 0.002), 'polymer', COL.polymerGray, [A, 0, 0], true);
+  b.rbox(0.028, 0.014, 0.032, 0.005, [0, 0.046, 0.052], 'polymer', COL.polymerBlack);     // 海狸尾
+
+  // ===== 4. 伸缩托（缓冲管 + 卡箍螺母 + 可调托板 + 托腮 + QD 座）=====
+  b.cylZ(0.0165, 0.200, [0, 0.096, 0.155], 'metal', COL.steelDark, 16, true);            // 缓冲管
+  b.cylZ(0.0195, 0.014, [0, 0.096, 0.064], 'metal', COL.steelDark, 14);                  // 卡箍螺母
+  b.box(0.040, 0.032, 0.008, [0, 0.096, 0.050], 'metal', COL.steelDark);                 // 尾板
+  b.rbox(0.038, 0.086, 0.155, 0.010, [0, 0.086, 0.232], 'polymer', COL.polymerBlack, null, true);
+  b.rbox(0.034, 0.020, 0.116, 0.006, [0, 0.134, 0.236], 'polymer', COL.polymerGray);     // 托腮
+  b.rbox(0.042, 0.100, 0.014, 0.004, [0, 0.082, 0.318], 'polymer', COL.rubber, null, true);  // 托底板
+  for (let i = 0; i < 2; i++) {
+    b.box(0.044, 0.006, 0.006, [0, 0.056 + i * 0.052, 0.324], 'polymer', COL.steelBlack);
+  }
+  b.box(0.012, 0.010, 0.032, [0, 0.040, 0.212], 'metal', COL.steelWorn);                 // 伸缩调节拨杆
+  b.cylX(0.004, 0.020, [0, 0.036, 0.196], 'metal', COL.steelDark, 10);                   // 拨杆轴
+  b.cylX(0.006, 0.012, [-0.020, 0.070, 0.286], 'metal', COL.steelWorn, 12);              // QD 背带座
+  addSlingLoop(b, [0, 0.038, 0.300], { radius: 0.009, axis: 'x' });
+
+  // ===== 5. 八边形自由浮动护木（四面导轨 + M-LOK 槽 + 散热孔阵列）=====
+  // 八边形平面朝 ±X / ±Y / 四个 45° 斜面：上下左右正好给四条导轨，斜面开槽
+  b.add(cylGeo(HG_R, HG_R, 0.285, 8, 'z'), 'polymer', COL.polymerBlack,
+    [0, 0.096, -0.348], [0, 0, Math.PI / 8], true);
+  // 前端八角箍（与护木同相位，否则会差 22.5°，看上去像拧了一圈）
+  b.add(cylGeo(0.0288, 0.0288, 0.012, 8, 'z'), 'metal', COL.steelDark,
+    [0, 0.096, -0.492], [0, 0, Math.PI / 8], true);
+  b.rbox(0.058, 0.056, 0.022, 0.006, [0, 0.096, -0.212], 'metal', COL.steelDark, null, true);  // 尾部夹箍
+  for (const sx of [-1, 1]) b.cylY(0.0032, 0.014, [sx * 0.026, 0.078, -0.212], 'metal', COL.steelWorn, 10);
+  b.box(0.028, 0.012, 0.285, [0, 0.1245, -0.348], 'metal', COL.steelDark, null, true);   // 顶部垫高（与机匣导轨共面）
+  addRail(b, { y: RAIL_Y, z: -0.348, length: 0.282, teeth: 4 });
+  // 左右侧面短导轨（贴在 ±X 平面）
+  for (const sx of [-1, 1]) {
+    b.box(0.006, 0.016, 0.120, [sx * (HG_FLAT + 0.003), 0.096, -0.300], 'metal', COL.steelDark);
+    for (let i = 0; i < 2; i++) {
+      b.box(0.008, 0.011, 0.007, [sx * (HG_FLAT + 0.008), 0.096, -0.276 - i * 0.030], 'metal', COL.steel);
+    }
+  }
+  // 下方短导轨
+  b.box(0.022, 0.006, 0.130, [0, 0.096 - HG_FLAT - 0.003, -0.300], 'metal', COL.steelDark);
+  for (let i = 0; i < 2; i++) {
+    b.box(0.026, 0.005, 0.007, [0, 0.096 - HG_FLAT - 0.0085, -0.276 - i * 0.030], 'metal', COL.steel);
+  }
+  // 45° 斜面：下方 M-LOK 槽 + 上方散热孔（成对阵列）
+  for (const sx of [-1, 1]) {
+    const rot = [0, 0, -sx * Math.PI / 4];
+    const dx = sx * HG_FLAT * Math.SQRT1_2;
+    for (let i = 0; i < 2; i++) {
+      b.box(0.0030, 0.009, 0.040, [dx, 0.096 - HG_FLAT * Math.SQRT1_2, -0.300 - i * 0.062],
+        'metal', COL.steelBlack, rot);
+      b.box(0.0030, 0.007, 0.018, [dx, 0.096 + HG_FLAT * Math.SQRT1_2, -0.300 - i * 0.062],
+        'metal', COL.steelBlack, rot);
+    }
+  }
+
+  // ===== 6. 枪管 / 短行程活塞导气箍 / 鸟笼消焰器 =====
+  b.cylZ(0.017, 0.028, [0, BORE, -0.198], 'metal', COL.steelDark, 16, true);             // 枪管螺母
+  b.cylZ(0.0082, 0.700, [0, BORE, -0.540], 'metal', COL.steelBright, 16, true);          // 5.56 细枪管
+  b.box(0.022, 0.030, 0.030, [0, 0.104, -0.582], 'metal', COL.steelDark, null, true);    // 导气箍（护木前）
+  b.cylX(0.0035, 0.024, [0, 0.104, -0.582], 'metal', COL.steelWorn, 10);                 // 导气箍销
+  b.cylZ(0.0092, 0.008, [0, BORE, -0.892], 'metal', COL.steelWorn, 14);                  // 压紧垫圈
+  b.cylZ2(0.0122, 0.0112, 0.058, [0, BORE, -0.925], 'metal', COL.steelDark, 16, true);   // 消焰器本体
+  b.cylZ(0.0124, 0.008, [0, BORE, -0.956], 'metal', COL.steelWorn, 16);                  // 前缘磨亮
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    b.box(0.0042, 0.0058, 0.040, [Math.cos(a) * 0.0104, BORE + Math.sin(a) * 0.0104, -0.925],
+      'metal', COL.steelBlack, [0, 0, a]);
+  }
+  b.cylZ(0.0052, 0.010, [0, BORE, -0.958], 'metal', COL.steelBlack, 12);                 // 膛口
+
+  // ===== 7. 前准星（A 形护翼 + 准星柱，柱尖 = 光轴）=====
+  b.box(0.030, 0.010, 0.030, [0, 0.1465, -0.582], 'metal', COL.steelDark, null, true);   // 准星座（坐在导气箍上）
+  for (const sx of [-1, 1]) {
+    b.box(0.0045, 0.026, 0.026, [sx * 0.0100, 0.1625, -0.582], 'metal', COL.steelDark, [0, 0, sx * 0.12]);
+  }
+  b.cylY(0.0016, 0.016, [0, 0.1470, -0.582], 'metal', COL.steelWorn, 8);                 // 准星柱
+  b.box(0.0020, 0.0018, 0.0020, [0, 0.1541, -0.582], 'metal', COL.steelBright);          // 柱尖亮面
+
+  // ===== 8. 后照门（翻起式觇孔照门 + 风偏旋钮）=====
+  b.rbox(0.024, 0.007, 0.026, 0.002, [0, 0.1445, 0.002], 'metal', COL.steelDark, null, true);
+  for (const sx of [-1, 1]) {
+    b.box(0.0045, 0.015, 0.010, [sx * 0.0085, 0.1560, 0.002], 'metal', COL.steelDark);
+  }
+  b.box(0.022, 0.005, 0.010, [0, 0.1630, 0.002], 'metal', COL.steelDark);               // 上横梁
+  b.torus(0.0045, 0.0015, [0, SIGHT_Y, 0.002], 'metal', COL.steelWorn);                  // 觇孔环（中空可透视）
+  b.cylX(0.0022, 0.026, [0, 0.1485, 0.002], 'metal', COL.steelWorn, 10);                 // 翻起铰轴
+  b.cylX(0.0045, 0.008, [-0.013, 0.1520, 0.002], 'metal', COL.steelWorn, 12);            // 风偏旋钮
+
+  // ===== 9. 5.56 直弹匣（略前倾 + 加强筋 + 底板）=====
+  b.profile('m416_mag', magShape(0.048, 0.046, 0.190, 0.024), 0.026,
+    [0, 0.030, -0.082], 'metal', COL.steelDark, [0.06, 0, 0], true);
+  b.box(0.030, 0.012, 0.054, [0, -0.160, -0.118], 'metal', COL.steelDark, [0.06, 0, 0], true);
+  for (const sx of [-1, 1]) {
+    b.box(0.0022, 0.150, 0.010, [sx * 0.0135, -0.072, -0.096], 'metal', COL.steel, [0.06, 0, 0]);
+  }
+  b.box(0.004, 0.010, 0.012, [0.0132, -0.030, -0.070], 'metal', COL.steelWorn);          // 弹匣卡槽
+
+  // ===== 10. 背带环 + 使用痕迹（棱边磨亮）=====
+  addSlingLoop(b, [-0.030, 0.070, -0.430], { radius: 0.009, axis: 'x' });
+  for (const sx of [-1, 1]) {
+    b.box(0.0012, 0.0020, 0.240, [sx * 0.0212, 0.1290, -0.075], 'metal', COL.steelWorn);
+    b.box(0.0012, 0.0018, 0.220, [sx * 0.0202, 0.0345, -0.062], 'metal', COL.steelWorn);
+  }
+  b.box(0.040, 0.0012, 0.0020, [0, 0.1330, 0.052], 'metal', COL.steelWorn);
+
+  return {
+    muzzle: [0, BORE, -0.963],
+    sightPoint: [0, SIGHT_Y, 0.002],      // 照门觇孔中心，与准星柱尖同高同轴（x = 0）
+    sightType: 'iron',
+    scopeLens: null,
+    rightGrip: [0, -0.020, 0.048],        // 右手握把中心
+    leftGrip: [0, 0.060, -0.330],         // 左手护木下方握持点
+    boltAxis: null,
+    sprite: null,
+  };
+}
+
 const BUILDERS = {
   pistol: buildPistol,
+  deagle: buildDeagle,
   smg: buildSmg,
   ak47: buildAk47,
   shotgun: buildShotgun,
   sniper: buildSniper,
+  m416: buildM416,
 };
 
 // ---------------------------------------------------------------------------

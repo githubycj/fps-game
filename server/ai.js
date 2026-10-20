@@ -86,9 +86,12 @@ const WEAPON_FALLBACK = {
   ak47: { fireInterval: 0.095, magSize: 30, reloadTime: 2.0, range: 85 },
   shotgun: { fireInterval: 0.78, magSize: 6, reloadTime: 2.3, range: 30 },
   sniper: { fireInterval: 1.55, magSize: 5, reloadTime: 2.7, range: 140 },
+  m416: { fireInterval: 0.086, magSize: 30, reloadTime: 1.95, range: 110 },
+  deagle: { fireInterval: 0.36, magSize: 7, reloadTime: 1.95, range: 90 },
 };
 const PREF_RANGE = {
   pistol: [7, 18], smg: [6, 16], ak47: [10, 28], shotgun: [3, 9], sniper: [22, 48],
+  m416: [9, 30], deagle: [10, 26],
 };
 const weaponCache = new Map();
 

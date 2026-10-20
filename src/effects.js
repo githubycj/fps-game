@@ -102,6 +102,10 @@ const FLASH_KINDS = {
   ak47: { life: 0.055, size: 0.22, light: 8, distance: 7.5, color: 0xffc070, smoke: 4 },
   shotgun: { life: 0.07, size: 0.32, light: 12, distance: 9, color: 0xffb050, smoke: 6 },
   sniper: { life: 0.06, size: 0.28, light: 10, distance: 9, color: 0xffc880, smoke: 5 },
+  // M416：5.56 消焰器，焰口中等、火星少
+  m416: { life: 0.05, size: 0.19, light: 7, distance: 7, color: 0xffcf85, smoke: 3 },
+  // 沙漠之鹰：.50 大口径，枪口焰大而亮、烟多
+  deagle: { life: 0.065, size: 0.26, light: 11, distance: 8.5, color: 0xffbe62, smoke: 5 },
 };
 
 // 弹壳尺寸倍率（基准几何 12mm × 12mm × 22mm 的黄铜盒）
@@ -111,6 +115,8 @@ const SHELL_SCALE = {
   ak47: 1.25,
   shotgun: 1.8,
   sniper: 1.5,
+  m416: 1.15,      // 5.56 弹壳略小于 7.62
+  deagle: 1.55,    // .50 AE 大口径弹壳
 };
 
 // 弹着 impact 倍率：大威力武器尘土/火花更多
@@ -120,6 +126,8 @@ const KIND_SCALE = {
   ak47: 1.0,
   shotgun: 1.5,
   sniper: 1.8,
+  m416: 0.95,
+  deagle: 1.4,
 };
 
 // surface 别名归一（shared/world.js 用 grass|road|dirt|rock，其余模块可能传 stone/concrete/wood/metal）

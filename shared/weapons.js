@@ -137,19 +137,49 @@ export const WEAPONS = {
     recoil: { pitch: 0.06, yaw: 0.012, ramp: 0.05, maxRamp: 4, recovery: 5, kick: 0.16, shake: 0.020 },
     audio: { base: 95, crack: 2600, tail: 1.1, gain: 1.1 },
   }),
+
+  // M416 突击步枪：AR 平台，比 AK 更稳、射速更快、单发伤害略低
+  // 定位：中近距离全能，后坐力垂直为主容易压枪，适合新手到中手
+  m416: def({
+    slot: 6, name: 'M416', category: 'rifle', fireMode: 'auto',
+    damage: 21, headshotMult: 2.5, legMult: 0.82, fireInterval: 0.086,
+    magSize: 30, reserveStart: 150, reserveMax: 180,
+    reloadTime: 1.95, reloadEmptyTime: 2.25, swapTime: 0.40, adsTime: 0.17,
+    spread: 0.012, spreadMoving: 0.026, spreadSprint: 0.088, spreadPerShot: 0.0048, spreadMax: 0.09, spreadRecover: 5.0,
+    spreadCrouchMult: 0.7, adsSpreadMult: 0.26, moveSpeedMult: 0.99,
+    sightType: 'iron', adsFov: 50, reticle: 'cross',
+    range: 110, falloffStart: 42, falloffEnd: 110, falloffMin: 0.66,
+    recoil: { pitch: 0.017, yaw: 0.008, ramp: 0.085, maxRamp: 10, recovery: 8.5, kick: 0.05, shake: 0.013 },
+    audio: { base: 132, crack: 3200, tail: 0.5, gain: 0.92 },
+  }),
+
+  // 沙漠之鹰：.50 AE 大口径半自动，单发极痛、后坐力巨大、弹匣小
+  // 定位：精准单点，2 枪躯干或 1 枪爆头，射速慢、腰射散布大
+  deagle: def({
+    slot: 7, name: '沙漠之鹰', category: 'pistol', fireMode: 'semi',
+    damage: 62, headshotMult: 2.3, legMult: 0.75, fireInterval: 0.36,
+    magSize: 7, reserveStart: 35, reserveMax: 49,
+    reloadTime: 1.95, reloadEmptyTime: 2.2, swapTime: 0.36, adsTime: 0.22,
+    spread: 0.014, spreadMoving: 0.038, spreadSprint: 0.11, spreadPerShot: 0.016, spreadMax: 0.10, spreadRecover: 4.2,
+    adsSpreadMult: 0.22, moveSpeedMult: 0.99,
+    sightType: 'iron', adsFov: 52, reticle: 'cross',
+    range: 90, falloffStart: 28, falloffEnd: 90, falloffMin: 0.55,
+    recoil: { pitch: 0.052, yaw: 0.014, ramp: 0.03, maxRamp: 3, recovery: 5.5, kick: 0.15, shake: 0.034 },
+    audio: { base: 92, crack: 2400, tail: 0.85, gain: 1.15 },
+  }),
 };
 
-// 武器栏顺序（数字键 1~5 / 滚轮切换）
-export const WEAPON_ORDER = ['pistol', 'smg', 'ak47', 'shotgun', 'sniper'];
+// 武器栏顺序（数字键 1~7 / 滚轮切换）
+export const WEAPON_ORDER = ['pistol', 'smg', 'ak47', 'shotgun', 'sniper', 'm416', 'deagle'];
 
 // 开局自带（其余靠地图拾取）
 export const STARTING_WEAPONS = ['pistol', 'smg'];
 
 // 可在地图上刷新的武器箱
-export const PICKUP_WEAPONS = ['ak47', 'shotgun', 'sniper'];
+export const PICKUP_WEAPONS = ['ak47', 'shotgun', 'sniper', 'm416', 'deagle'];
 
-// AI 可用武器池（按定位分配）
-export const AI_WEAPONS = ['smg', 'ak47', 'shotgun', 'pistol'];
+// AI 可用武器池（按定位分配）；M416 给突击手，沙漠之鹰给精确射手做副武器
+export const AI_WEAPONS = ['smg', 'ak47', 'shotgun', 'pistol', 'm416', 'deagle'];
 
 export function weaponOf(id) {
   return WEAPONS[id] || WEAPONS.pistol;

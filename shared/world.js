@@ -592,11 +592,14 @@ export function spawnYaw(spawn) {
   return Math.atan2(spawn.x, spawn.z);
 }
 
-// 固定武器箱位置（据点中心）
+// 固定武器箱位置（据点中心 + 两处补给点）
 export const CRATE_SPOTS = [
   { x: -34, z: 6, type: 'ak47' },
   { x: 0, z: 0, type: 'sniper' },
   { x: 34, z: 6, type: 'shotgun' },
+  // 新增枪械：A/C 据点外侧各放一个，鼓励绕后取枪
+  { x: -46, z: -14, type: 'm416' },
+  { x: 46, z: -14, type: 'deagle' },
 ];
 
 // 消耗品/武器道具点：固定种子采样，保证不压在碰撞体上

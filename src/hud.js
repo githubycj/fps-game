@@ -57,9 +57,10 @@ const nextFrame = (fn) => {
 // 武器显示名（服务器 kind → 中文）
 const WEAPON_NAMES = {
   pistol: '手枪', smg: '冲锋枪', ak47: '突击步枪', shotgun: '霰弹枪', sniper: '狙击步枪',
+  m416: 'M416', deagle: '沙漠之鹰',
   knife: '匕首', medkit: '急救包', shield: '护盾', speed: '加速',
 };
-const WEAPON_ORDER_DEFAULT = ['pistol', 'smg', 'ak47', 'shotgun', 'sniper'];
+const WEAPON_ORDER_DEFAULT = ['pistol', 'smg', 'ak47', 'shotgun', 'sniper', 'm416', 'deagle'];
 const weaponNameOf = (kind, fallback) => WEAPON_NAMES[kind] || fallback || kind || '';
 
 function isScopeSight(sightType) {
@@ -1430,7 +1431,7 @@ export const hud = {
 };
 
 // 弹匣容量提示（仅用于低弹量着色，实际数值以服务器为准）
-const WEAPON_MAG_HINT = { pistol: 12, smg: 30, ak47: 30, shotgun: 8, sniper: 5 };
+const WEAPON_MAG_HINT = { pistol: 12, smg: 30, ak47: 30, shotgun: 8, sniper: 5, m416: 30, deagle: 7 };
 
 function updateScoreLine() {
   setText(node('score'), '击杀 ' + state.kills + ' · 死亡 ' + state.deaths);
