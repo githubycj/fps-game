@@ -3,7 +3,7 @@
 // 并让枪身 -Z 与视线同向 —— 这样机械瞄具 / 红点 / 狙击镜才真正可用。
 // 另外提供程序化第一人称手臂（双骨 IK），避免"悬浮枪"穿帮。
 import * as THREE from 'three';
-import { WORLD } from '../shared/world.js';
+import { WORLD } from '../shared/active.js';
 import { weaponOf } from '../shared/weapons.js';
 
 // 腰射姿态（相机局部坐标）；长枪更靠下前方

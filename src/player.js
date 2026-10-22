@@ -1,9 +1,11 @@
 // ===== 本地玩家：输入 / 客户端预测移动 / 体力与姿态 / 开镜 / 武器状态机 / 后坐力 =====
-// 移动与地形碰撞全部走 shared/world.js（与服务器同源），保证预测一致。
+// 移动与地形碰撞全部走 shared/active.js（按 MAP 分发到当前地图，与服务器同源），保证预测一致。
+// 注意：绝不能 import '../shared/world.js' —— 那是郊区地图的固定实现。在潮汐湾地图下
+// 用另一套地形/碰撞体做预测，会表现为极严重的反复横跳（橡皮筋回拉）。
 import * as THREE from 'three';
 import {
   WORLD, heightAt, movePlayerHorizontal, stepPlayerPhysics, applyJump, surfaceAt, groundHeightAt,
-} from '../shared/world.js';
+} from '../shared/active.js';
 import {
   weaponOf, WEAPON_ORDER, STARTING_WEAPONS, currentSpread,
 } from '../shared/weapons.js';

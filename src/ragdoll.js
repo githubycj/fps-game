@@ -13,10 +13,10 @@
 //   parts = [{ name, obj:Object3D, halfExtents:[x,y,z], mass, offset?:[x,y,z] }, ...]
 //   obj 的 position/quaternion 由本模块直接读写（进入布娃娃前角色会把这些关节拍平到 root 下，
 //   因此 anchor 的逆矩阵一次求解即可把世界姿态写回局部姿态）。
-//   本模块只依赖 three 与 shared/world.js，不 import character.js（避免循环依赖）。
+//   本模块只依赖 three 与 shared/active.js（当前地图），不 import character.js（避免循环依赖）。
 
 import * as THREE from 'three';
-import { heightAt, terrainNormal, COLLIDERS } from '../shared/world.js';
+import { heightAt, terrainNormal, COLLIDERS } from '../shared/active.js';
 
 // 供其它模块（character.js 掉落武器时）贴合地形使用，避免再单独 import world.js
 export { heightAt as groundHeightAt };

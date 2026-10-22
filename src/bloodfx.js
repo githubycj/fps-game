@@ -14,7 +14,7 @@
 // 与 effects.js 的 bloodImpact（红色血雾粒子）并存、互不干扰：那个保留，这里补足"喷到地面/墙面"。
 
 import * as THREE from 'three';
-import { heightAt, terrainNormal, raycastWorld } from '../shared/world.js';
+import { heightAt, terrainNormal, raycastWorld } from '../shared/active.js';
 
 // ---------------------------------------------------------------------------
 // 常量

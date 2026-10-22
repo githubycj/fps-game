@@ -243,6 +243,43 @@ try {
   check('按 W 前进（服务器位置移动 > 2.5m）', moved > 2.5, `moved=${moved.toFixed(2)}m`);
   check('移动后仍贴地/可站立', m1.y > -2 && m1.alive);
 
+  // ---------- 2.1 客户端预测与服务器权威一致（回归：曾因客户端 import 旧地图导致反复横跳）----------
+  await key('KeyW', 'w', true);
+  const smooth = await evaluate(async () => {
+    const g = window.__game;
+    const pts = [];
+    const t0 = performance.now();
+    while (performance.now() - t0 < 3500) {
+      await new Promise((r) => requestAnimationFrame(r));
+      const me = (g.serverPlayers || []).find((p) => p.id === g.myId);
+      const l = g.local;
+      if (!me || !l || !l.pos) continue;
+      pts.push({ x: l.pos.x, z: l.pos.z, y: l.pos.y, sy: me.y });
+    }
+    let back = 0, travel = 0;
+    if (pts.length > 2) {
+      const a = pts[0], b = pts[pts.length - 1];
+      const hx = b.x - a.x, hz = b.z - a.z;
+      const hlen = Math.hypot(hx, hz) || 1;
+      const ux = hx / hlen, uz = hz / hlen;
+      travel = hlen;
+      for (let i = 1; i < pts.length; i++) {
+        const dx = pts[i].x - pts[i - 1].x;
+        const dz = pts[i].z - pts[i - 1].z;
+        if (dx * ux + dz * uz < -0.02) back++;
+      }
+    }
+    let yMax = 0;
+    for (const p of pts) yMax = Math.max(yMax, Math.abs(p.y - p.sy));
+    return { frames: pts.length, travel, back, yMax };
+  });
+  await key('KeyW', 'w', false);
+  await sleep(200);
+  check('移动时客户端与服务器高度一致（无垂直橡皮筋）', smooth.frames > 5 && smooth.yMax < 0.6,
+    `frames=${smooth.frames} |dy|max=${smooth.yMax.toFixed(3)}m`);
+  check('移动轨迹无倒退帧（无水平反复横跳）', smooth.frames > 5 && smooth.travel > 1.5 && smooth.back <= 2,
+    `travel=${smooth.travel.toFixed(2)}m backward=${smooth.back}/${smooth.frames - 1}`);
+
   // 冲刺 + 体力（轮询到体力下降为止）
   await key('ShiftLeft', 'Shift', true);
   await key('KeyW', 'w', true);

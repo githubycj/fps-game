@@ -1,4 +1,6 @@
-// ===== 兼容层：旧代码可以继续从 shared/map.js 导入世界与武器数据 =====
-// 实际实现在 shared/world.js（地形/物理/射线/布局）与 shared/weapons.js（武器数值）。
-export * from './world.js';
+// ===== 兼容层：re-export 当前地图 + 武器数值 =====
+// 历史原因保留这个名字；真正的地图实现由 shared/active.js 按 MAP 环境变量分发
+// （shared/tidewater.js 潮汐湾 / shared/world.js 郊区战场）。
+// 新代码请直接 import './active.js'，不要再走这里。
+export * from './active.js';
 export * from './weapons.js';
