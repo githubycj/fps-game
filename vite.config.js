@@ -1,5 +1,10 @@
 import { defineConfig } from 'vite';
 
+// 游戏服务器（WebSocket /ws）的端口：由 scripts/dev.mjs 探测后通过 GAME_PORT 注入，
+// 保证「服务器实际监听的端口」和「Vite 代理的目标端口」永远一致。
+// 某些 Windows 机器会保留整段端口（例如 2927~3026），默认 3001 会 EACCES 起不来。
+const GAME_PORT = process.env.GAME_PORT || process.env.PORT || '3001';
+
 export default defineConfig({
   // 依赖预构建缓存放到项目内（C 盘空间紧张，避免写到系统临时目录导致 ENOSPC）
   cacheDir: '.vite-cache',
@@ -40,7 +45,7 @@ export default defineConfig({
     },
     proxy: {
       '/ws': {
-        target: 'ws://localhost:3001',
+        target: `ws://localhost:${GAME_PORT}`,
         ws: true,
         // 玩家关闭标签/刷新页面时，浏览器会直接断开 TCP，
         // Vite 代理默认会把 ECONNRESET 打印成 "ws proxy socket error"。

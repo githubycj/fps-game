@@ -2540,6 +2540,22 @@ async function start() {
   await ensureAiModules();
   ensureNav();
   initItems();
+  // 端口绑定失败时给出可执行的提示，而不是只抛一个未捕获的 EACCES/EADDRINUSE。
+  // 常见原因：端口被占用；或 Windows 的 Hyper-V/WSL 动态端口保留把整段端口预留了
+  // （netsh interface ipv4 show excludedportrange protocol=tcp 可以查看）。
+  server.on('error', (err) => {
+    const code = err && err.code;
+    if (code === 'EACCES' || code === 'EADDRINUSE') {
+      console.error('[server] 端口 ' + PORT + ' 无法监听（' + code + '）。');
+      console.error('[server] 可能原因：端口被占用，或被 Windows 保留（Hyper-V/WSL 动态端口段）。');
+      console.error('[server] 排查：netsh interface ipv4 show excludedportrange protocol=tcp');
+      console.error('[server] 解决：换一个端口启动，例如  PORT=3030 npm start  或  PORT=3030 npm run dev');
+      console.error('[server] （npm run dev 会自动挑一个可用端口并把 Vite 代理同步过去）');
+    } else {
+      console.error('[server] 启动失败：', err && err.message ? err.message : err);
+    }
+    process.exit(1);
+  });
   server.listen(PORT, '0.0.0.0', () => {
     console.log('[server] ' + MAP_META.name + '（' + MAP_ID + '）服务器已启动：' + PORT + '（HTTP + WebSocket /ws）');
     console.log('[server] 模式 死亡竞赛：' + SQUADS.map((s) => s.tag).join('/') +

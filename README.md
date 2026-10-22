@@ -64,6 +64,21 @@ npm start            # 服务器监听 3001，同时托管前端与 WebSocket
 > 若构建时遇到 Windows 临时目录权限问题，可把 TEMP/TMP 指向工程内目录后再构建
 > （`set TEMP=%cd%\.tmp & set TMP=%cd%\.tmp & npm run build`）。
 > 端口可用 `PORT` 环境变量修改（游戏服务器），`VITE_PORT` 修改 Vite 端口。
+
+**关于端口被 Windows 保留（`listen EACCES`）**：部分机器上 Hyper-V / WSL / Docker 会整段保留端口
+（例如本机保留 `2927~3026`，默认的 3001 正好在里面），此时服务器起不来、浏览器会看到
+`[vite] ws proxy error: AggregateError [ECONNREFUSED]` 并且**无法加入游戏**。
+
+`npm run dev` 现在会在启动前探测一个真正可绑定的端口，并把 `GAME_PORT` 同时注入服务器与 Vite 代理，
+两边永远一致，日志会打印实际使用的端口：
+
+```
+[dev] 端口 3001 不可用（可能被系统保留或占用），改用 3027
+[dev] 游戏服务器端口：3027（Vite 的 /ws 代理已同步到该端口）
+```
+
+排查保留段：`netsh interface ipv4 show excludedportrange protocol=tcp`。
+生产模式（`npm start`）同样支持 `PORT=3030 npm start`；端口不可用时服务器会打印明确提示而不是直接崩。
 >
 > **关于 `[vite] ws proxy socket error: Error: read ECONNRESET`**：这是正常现象——
 > 关闭标签页 / 刷新页面 / 断网时浏览器会直接断开 TCP，Vite 的 WebSocket 代理会把这条
