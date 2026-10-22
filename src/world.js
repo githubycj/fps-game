@@ -22,8 +22,17 @@ import { createProps } from './world/props.js';
 import { createVegetation } from './world/vegetation.js';
 import { createItemFactory } from './world/items.js';
 import { createPost } from './world/post.js';
+import { MAP_ID } from '../shared/active.js';
+import { buildTidewaterWorld } from './world/tidewater/index.js';
 
+// 地图分发：main.js 只认 buildWorld，具体用哪套场景由 shared/active.js 的 MAP_ID 决定。
 export function buildWorld(scene, renderer, opts = {}) {
+  if (MAP_ID === 'tidewater') return buildTidewaterWorld(scene, renderer, opts);
+  return buildSuburbanWorld(scene, renderer, opts);
+}
+
+// 郊区战场（原有实现，保持不变）
+function buildSuburbanWorld(scene, renderer, opts = {}) {
   if (!scene) throw new Error('buildWorld: 需要 THREE.Scene');
 
   const soft = opts.soft != null ? !!opts.soft : isSoftwareRenderer(renderer);

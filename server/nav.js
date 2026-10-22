@@ -1,13 +1,15 @@
-// ===== 导航网格 + A* 寻路（server/nav.js，ai-nav 实现）=====
-// 基于 shared/world.js 的确定性地形高度场与碰撞体，构建 1m 分辨率可行走网格。
-// 网格约定（与 Lead 对齐）：140×140 个格子，i = floor(x+70), j = floor(z+70)，
-// 节点世界坐标 = (i+0.5-70, j+0.5-70)。这样寻路点天然落在格心，方便与物理/射线对齐。
+// ===== 导航网格 + A* 寻路（server/nav.js）=====
+// 地图无关：所有地形/碰撞数据都来自 shared/active.js（按 MAP 环境变量切换郊区 / 潮汐湾），
+// 不再直接 import shared/world.js，保证服务器与客户端用的是同一张地图。
 //
-// 可走判定与 shared/world.js 的 isWalkableAt 等价（同一净空半径 R = playerRadius + 0.35，
+// 网格分辨率 1m：i = floor(x+half), j = floor(z+half)，节点世界坐标 = (i+0.5-half, j+0.5-half)。
+// 郊区 140×140（half=70），潮汐湾 320×320（half=160），尺寸全部由 WORLD.size/half 推导。
+//
+// 可走判定与 shared/<map>.js 的 isWalkableAt 等价（同一净空半径 R = playerRadius + 0.35，
 // 同一竖直过滤：顶面低于台阶高度的矮障碍可跨过、门楣等头顶构件不挡路），但这里按碰撞体
 // bbox 局部刷格而不是每格遍历全部碰撞体，建图从 ~100ms 降到 ~10ms 级。
 //
-// 对外 API（contract §6.7）：
+// 对外 API（契约 §4.4 只要求这些名字稳定，可新增）：
 //   buildNav() -> nav            （模块级缓存，整进程只建一次；可传 source 供测试）
 //   findPath(nav, sx,sz, tx,tz)  -> [{x,z}] | null
 //   nearestWalkable(nav,x,z)     -> {x,z} | null
@@ -15,14 +17,13 @@
 //   hasLineOfWalk(nav, ax,az,bx,bz) -> boolean
 //   sampleCover(nav, x,z, threatX,threatZ) -> {x,z,low} | null
 import {
-  WORLD, COLLIDERS, ZONES, SPAWNS, heightAt, isWalkableAt, losBlocked,
-} from '../shared/world.js';
+  WORLD, COLLIDERS, SPAWNS, heightAt, isWalkableAt, losBlocked,
+} from '../shared/active.js';
 
-const MARGIN = WORLD.playerRadius + 0.35;  // 与 isWalkableAt 的净空半径保持一致（≈0.77m）
-const RANGE_MARGIN = WORLD.half - 3;       // 与 isWalkableAt 的边界判定保持一致
-const SOLID_MARGIN = 0.12;                 // 掩体/视线网格余量
+const SOLID_MARGIN = 0.12;                 // 掩体/视线网格余量（净空半径在 buildNavFrom 内按地图 WORLD.playerRadius 计算）
 const LINE_STEP = 0.4;                     // 直线可达性采样步长（米）
-const MAX_EXPAND = 14000;                  // A* 展开上限，防止封闭区域/无解目标卡死
+// A* 展开上限：潮汐湾 320×320 格，跨图寻路展开量远大于郊区，放宽到 40000 仍然有界
+const MAX_EXPAND = 40000;
 const SQRT2 = Math.SQRT2;
 const INF = 1e9;
 const JUMPABLE_MAX = 1.0;                  // 顶面不高于 1m 的矮障碍可尝试起跳翻越
@@ -293,6 +294,7 @@ function buildNavFrom(src) {
   const maxSlope = finiteOr(W.maxSlope, 0.9);
   const R = finiteOr(W.playerRadius, 0.42) + 0.35;
   const R2 = R * R;
+  const rangeMargin = half - 3;   // 与 isWalkableAt 的边界判定保持一致（每张地图自己算）
 
   const walkable = new Uint8Array(count).fill(1);
   const heights = new Float32Array(count);
@@ -315,7 +317,7 @@ function buildNavFrom(src) {
     for (let i = 0; i < n; i++) {
       const idx = j * n + i;
       const x = i + 0.5 - half;
-      if (Math.abs(x) > RANGE_MARGIN || Math.abs(z) > RANGE_MARGIN) { walkable[idx] = 0; continue; }
+      if (Math.abs(x) > rangeMargin || Math.abs(z) > rangeMargin) { walkable[idx] = 0; continue; }
       const h0 = heights[idx];
       let s = 0;
       for (let dz = -1; dz <= 1; dz++) {
@@ -381,8 +383,9 @@ function buildNavFrom(src) {
       if (p) spawns.push(p);
     }
   }
+  // 死亡竞赛不再有据点：zones 保留空数组，避免下游读到 undefined（决策逻辑已不依赖它）
   const zones = [];
-  const zoneList = Array.isArray(src.ZONES) ? src.ZONES : (Array.isArray(ZONES) ? ZONES : []);
+  const zoneList = Array.isArray(src.ZONES) ? src.ZONES : [];
   for (const z of zoneList) {
     if (!z || !Number.isFinite(z.x) || !Number.isFinite(z.z)) continue;
     const node = nodeAt(tmpNav, z.x, z.z);
@@ -519,7 +522,7 @@ function nearestWalkableInner(nav, x, z) {
 // 构建（并缓存）导航网格。server 只调一次；测试可传 source 覆盖数据源（不写缓存）。
 export function buildNav(source) {
   if (source) return buildNavFrom(source);
-  if (!_navCache) _navCache = buildNavFrom({ WORLD, COLLIDERS, ZONES, SPAWNS, heightAt, isWalkableAt, losBlocked });
+  if (!_navCache) _navCache = buildNavFrom({ WORLD, COLLIDERS, ZONES: [], SPAWNS, heightAt, isWalkableAt, losBlocked });
   return _navCache;
 }
 

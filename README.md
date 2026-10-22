@@ -1,14 +1,26 @@
-# 郊区战场 · SUBURBAN FRONT
+# 潮汐湾 · TIDEWATER — 网页版 3D 死亡竞赛射击
 
-网页版 3D 多人射击游戏（**Vite + Three.js + Node.js/ws**），从"霓虹竞技场"原型整体重制为**写实郊区战场**：
-起伏草地、可进入民房、26m 输电塔与悬链电缆、杂草/树木/石堆、真实太阳光照与阴影、精密程序化枪械、
-真实开镜与狙击镜、程序化分层枪声、重构命中反馈（白十字 / 爆头红斜线 X）、无曳光弹、真人级角色骨骼与 AI 寻路视野。
-玩法为 **据点争夺（Domination）+ 冲刺/蹲/滑铲 + 5 连杀 UAV**。
+网页版 3D 多人射击游戏（**Vite + Three.js + Node.js/ws**，零外部资源、全程序化建模/贴图/音频）。
 
-![郊区战场](screenshots/village.png)
+- **玩法：死亡竞赛（Deathmatch）** —— 限时 **8 分钟**内**击杀数（人头）最多的小队获胜**，支持 **2~4 支小队**混战，
+  每支小队都有多个 AI 队友与 AI 敌人（"多 AI 小队"）。冲刺/蹲/滑铲、钢制插板、5 连杀 UAV 全部保留。
+- **地图：两张可选**
+  - **潮汐湾 TIDEWATER**（新，默认）—— 热带海岛渔村：白沙滩、珊瑚礁浅滩、长栈桥、吊脚渔屋、搁浅渔船。
+    参考 [dgreenheck/tidewater](https://github.com/dgreenheck/tidewater) 的空间布局与美术方向，用本项目
+    纯程序化管线重建为一张 **320×320** 的射击地图（不含任何外部资源）。
+  - **郊区战场 SUBURBAN**（旧）—— 起伏草地、可进入民房、26m 输电塔与悬链电缆。
 
-> 截图来自本机 headless Chrome（软件渲染 SwiftShader，低帧率下仍可运行；真实 GPU 上会开启阴影、Bloom 与满密度草地）。
-> 更多截图见 `screenshots/`：`menu.png`、`warmup.png`、`hills.png`、`characters.png`、`scope.png`、`ads-pistol.png`、`ads-ak47.png`、`smg-reddot.png`、`dmg-indicator.png`、`m416.png`、`m416-ads.png`、`deagle.png`、`deagle-ads.png`。
+> 旧的**拆弹玩法（Search & Destroy：炸弹 / 包点 / 回合 / 购买 / 经济 / 安包拆包）已彻底删除**。
+
+![潮汐湾 · 长栈桥](screenshots/tidewater-pier.png)
+
+| 渔村 | 海滩与海面 |
+| --- | --- |
+| ![渔村](screenshots/tidewater-village.png) | ![海滩](screenshots/tidewater-beach.png) |
+
+> 截图来自本机 headless Chrome（软件渲染 SwiftShader，中档画质；真实 GPU 上会开启 Bloom 与满密度草地）。
+> 潮汐湾：`screenshots/tidewater-menu.png`、`tidewater-village.png`、`tidewater-pier.png`、`tidewater-beach.png`、`tidewater-gameplay.png`。
+> 郊区战场：`screenshots/village.png`、`menu.png`、`hills.png`、`characters.png`、`scope.png`、`ads-ak47.png`、`smg-reddot.png`、`m416.png`、`deagle.png` 等。
 
 ## 快速开始
 
@@ -20,7 +32,27 @@ npm run dev          # 同时启动游戏服务器(:3001) 与 Vite(:4173)
 浏览器打开 http://localhost:4173 ，输入昵称 → 进入战场。
 
 - 局域网联机：`ipconfig` 查本机 IP，好友访问 `http://你的IP:4173`。
-- 多开浏览器标签页即可多人对战；服务器会自动补充 AI（默认 5 个，`BOTS_MAX=0` 关闭）。
+- 多开浏览器标签页即可多人对战；服务器会自动按小队补充 AI。
+
+### 地图与小队（环境变量）
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `MAP` | `tidewater` | 当前地图：`tidewater`（潮汐湾）/ `suburban`（郊区战场） |
+| `SQUADS` | `4` | 小队数量：2 / 3 / 4 |
+| `BOTS_PER_SQUAD` | `3` | 每支小队的 AI 数量（`0` = 纯真人） |
+| `BOTS_MAX` | — | 旧变量，兼容：按小队均分（`BOTS_MAX=0` 关闭全部 AI） |
+| `PORT` / `DEBUG` | `3001` / 关 | 服务器端口 / 打开调试钩子 |
+
+```bash
+# 玩旧地图
+MAP=suburban npm run dev
+# 2 支小队、每队 1 个 AI
+SQUADS=2 BOTS_PER_SQUAD=1 npm run dev
+```
+
+> 地图由**服务器**决定：客户端启动后会读服务器 `welcome` 里的 `map`，不一致时自动带 `?map=` 刷新，
+> 保证地形高度、碰撞体、射线两侧逐位一致（也可以直接访问 `http://localhost:4173/?map=suburban`）。
 
 生产模式：
 
@@ -81,36 +113,30 @@ npm start            # 服务器监听 3001，同时托管前端与 WebSocket
 
 ## 玩法
 
-### 主模式：拆弹（Search & Destroy）
+### 主模式：死亡竞赛（Deathmatch · 多小队）
 
-经典 5v5 式拆弹玩法，**先赢 5 回合者获胜**。
+**限时内击杀数最多的小队获胜。** 没有炸弹、没有包点、没有回合、没有购买与经济。
 
 | 阶段 | 时长 | 说明 |
 | --- | --- | --- |
-| 回合开始 | **6s 冻结** | 双方不能移动/开火，可转头观察；**同时开放 20s 购买窗口** |
-| 回合进行 | **105s** | 进攻方 alpha 携炸弹，需在 **A / B 包点**（半径 3.2m 内）安放 |
-| 安放 | **3.2s** | 按 **E** 开始安放；期间被打断/死亡则取消 |
-| 炸弹倒计时 | **40s** | 安放后开始倒计时，**爆炸即进攻方胜** |
-| 拆除 | **5s** | 防守方 bravo 在 2.2m 内按 **E** 拆除；**拆完即防守方胜** |
+| 等待 | — | 真人进入后显示"按空格开始战斗" |
+| 倒计时 | **3s** | 真人按下空格后开场 |
+| 进行中 | **480s（8 分钟）** | 自由交战，死亡 **3 秒**后在本队出生区复活 |
+| 结算 | **8s** | 显示 4 队最终排名，随后自动开下一局 |
 
-**胜负判定**：
-- 进攻方胜：炸弹爆炸 / 防守方全灭
-- 防守方胜：拆除成功 / 时间到未安放 / 进攻方全灭（且炸弹未安放）
-- 炸弹携带者阵亡 → **炸弹掉落在原地**，进攻方队友可按 E 捡起
+**规则**
 
-**购买系统**（地图上**不再有武器箱**）：
-| 武器 | 价格 | 定位 |
-| --- | --- | --- |
-| 手枪 | 免费 | 默认携带 |
-| 沙漠之鹰 | $700 | .50 大口径，2 枪躯干 |
-| 冲锋枪 | $1250 | 近身泼水，射速最快 |
-| 霰弹枪 | $1100 | 12m 内一击必杀 |
-| 突击步枪 | $2700 | 单发更痛，后坐大 |
-| M416 | $2900 | AR 平台，后坐稳易压枪 |
-| 狙击枪 | $4750 | 穿甲弹，爆头必杀 |
+- **小队**：默认 **4 支**（ALPHA 蓝 / BRAVO 红 / CHARLIE 绿 / DELTA 黄），可配置为 2~4 支。
+- **计分**：**每次击杀给击杀者所在小队 +1 分**（纯人头，爆头同样 1 分）。**同小队互不伤害**。
+- **胜负**：时间到 → 击杀数最多的小队获胜（全 0 击杀判平局）；`DM.killTarget > 0` 时先到即结束。
+- **复活**：死亡 3 秒后在本队出生点复活，附带 **1.5 秒出生保护**（无敌）。
+- **自动平衡**：真人加入时优先分配到人数最少的小队。
+- **AI**：每支小队默认 **3 个 AI**，会巡逻、听枪声、找掩体、追击最后已知位置、低血撤退；AI 之间也会互相交战。
+- **武器**：出生自带手枪 + 冲锋枪，其余武器（AK47 / M416 / 沙漠之鹰 / 霰弹枪 / 狙击枪）从地图武器箱拾取（30 秒刷新），
+  医疗包 / 护盾 / 加速从消耗品点拾取。
+- **连杀**：5 连杀（不死）→ 全队 **UAV 10 秒**，小地图与头顶标记暴露敌军位置。
 
-资金：初始 **$800**，上限 $9000；击杀 +$300、安放 +$300、拆除 +$300、胜回合 +$3000、败回合 +$1900。
-按 **B** 打开购买界面，点击或按数字键购买。
+> 规则数值集中在 [shared/mode.js](shared/mode.js)（`DM` / `SQUADS` / `AI_CONFIG`），改一处前后端同时生效。
 
 ### 基础规则
 
@@ -130,7 +156,7 @@ npm start            # 服务器监听 3001，同时托管前端与 WebSocket
   受重力倒地、与地面/建筑碰撞、自然摊平（实测最终躯干倾角 80~88°），静止后自动休眠。
 - **战术机动**：冲刺/蹲下/滑铲/跳跃，姿态影响移速、散布与命中盒（蹲下更难被击中）。
 - **连杀奖励**：5 连杀（不死）→ 全队 UAV 10 秒，小地图与头顶标记暴露敌军位置。
-- **AI**：alpha（玩家 + 友军 AI）vs bravo（敌军 AI），AI 会占点、找掩体、包抄、听枪声、记忆目标。
+- **AI**：每支小队都有 AI 队友与 AI 敌人，跨小队互相敌对；AI 会巡逻、听枪声、找掩体、包抄、记忆目标、低血撤退。
 - **AI 小队战术**：每个 AI 自动分配角色，角色决定**用什么枪、打多远、怎么打**——
   | 角色 | 主武器 | 偏好交战距离 | 射击节奏 | 行为倾向 |
   | --- | --- | --- | --- | --- |
@@ -164,7 +190,9 @@ npm start            # 服务器监听 3001，同时托管前端与 WebSocket
 | 特殊弹药 | 狙击=穿甲弹（躯干强制 -90% 最大生命 / 爆头一枪击杀）；霰弹枪近距离（≤12m）无视护甲一击必杀 |
 | 受击血丝 | 中弹时屏幕边缘生成程序化**血管纹理**（越重越密），0.5s 消散；生命 <15% 常驻**暗黑血丝+暗角**，回血或死亡才清除 |
 | 受击方向 | 屏幕中心辐射的**正态分布（高斯钟形）曲线扇形**：尖端+发光点精确指向伤害来源，越靠近中心越红 |
-| 玩法创新 | 据点争夺 + 冲刺/蹲/滑铲 + 5 连杀 UAV + 武器箱刷新 |
+| 玩法创新 | **限时死亡竞赛（人头最多者胜）+ 2~4 支多 AI 小队** + 冲刺/蹲/滑铲 + 5 连杀 UAV + 武器箱刷新 |
+| 新地图：潮汐湾 | `shared/tidewater.js` 320×320 确定性高度场（海岸线/沙滩/村落地台/双岬角/主脊/礁石浅滩/海床）+ `shared/phys.js` 通用物理；`src/world/tidewater/*` 程序化海岛地形、Gerstner 波海面与近岸白沫、7 栋可进入渔村建筑、长栈桥、搁浅渔船、棕榈与沙丘草 |
+| 多地图支持 | `shared/active.js` 地图注册表按 `MAP` 环境变量分发；服务器在 `welcome` 回传地图 id，客户端不一致时自动 `?map=` 刷新 |
 | 进入卡顿优化 | ① 程序化贴图**分帧上传**（主菜单阶段每帧 2 张，进入前全部就绪）；② 材质/着色器分 3 批预编译；③ 地形与草地/杂草/野花按 4×4 区块拆分，视锥裁剪 + **按距离的 LOD 流式**（远处区块整块关闭、中距半密度） |
 
 ## 武器
@@ -217,6 +245,11 @@ npm start            # 服务器监听 3001，同时托管前端与 WebSocket
 
 ### 共享世界合同（要点）
 
+- **地图注册表 `shared/active.js`**：按 `MAP`（服务器）/ `?map=`（浏览器）选择 `shared/tidewater.js` 或
+  `shared/world.js`，并把同名导出透出；下游模块只依赖它，不直接 import 具体地图。
+- **玩法合同 `shared/mode.js`**：`DM`（时长/击杀目标/复活/出生保护/连杀）、`SQUADS`（4 队 id/名字/颜色）、`AI_CONFIG`。
+- **通用物理 `shared/phys.js`**：`createWorldPhysics({WORLD, heightAt, terrainNormal, surfaceAt, colliders, zones, spawns})`
+  返回与郊区地图逐行等价的物理/射线/命中盒/出生点函数，新地图直接复用，不重复实现。
 - 地形高度 `heightAt(x,z)`：固定哈希 value-noise + 山丘 + 平整垫 → 1m 采样网格双线性插值。
 - 碰撞体 `COLLIDERS`：全部带 `y0/y1` 的 AABB（房屋墙、栅栏、树、石、车、塔、工事、边界）。
 - 物理 `movePlayerHorizontal()` + `stepPlayerPhysics()`：客户端预测与服务器权威同一套代码。
@@ -224,7 +257,7 @@ npm start            # 服务器监听 3001，同时托管前端与 WebSocket
 - 命中盒 `hitboxesFor(p)`：头球 + 躯干/腿胶囊，蹲/滑铲整体压低。
 - 武器 `shared/weapons.js`：伤害/散布/后坐力/开镜 FOV/弹药/音色提示。
 
-服务器 20Hz 全量快照广播；客户端预测 + 对账；权威弹药/换弹/切枪/命中/据点/比赛/AI。
+服务器 20Hz 全量快照广播；客户端预测 + 对账；权威弹药/换弹/切枪/命中/小队计分/比赛流程/AI。
 
 ## 画质
 
@@ -254,7 +287,18 @@ npm start            # 服务器监听 3001，同时托管前端与 WebSocket
 - **纵深**：`1-exp(-t*0.00022)` 大气透视，山顶额外 ×0.60 让高处更通透。
 
 ### 地图与建筑
-- 地图 **240×240m**（半宽 120），9 个丘陵 + 8 栋可进入房屋（含谷仓/棚屋）+ 3 座 26m 输电塔。
+
+**潮汐湾 TIDEWATER（默认，320×320m）**
+- 高度场 1.25m 网格（257×257）+ 双线性插值；**海平面 y = 0**，南侧是海、北侧是岛。
+- 海岸线 `shoreZ(x)` 由正弦 + value-noise 生成；沙滩净坡 6.0°~6.8°；海床到 −16m；礁石浅滩 −1.2m + 8 块露出水面的海蚀柱。
+- 村落地台 (28,−62) r=46 **完全平整 8.5m**；7 栋可进入渔村建筑（吊脚渔屋×3 / 船屋 / 杂货铺 / 鱼摊棚 / 工具棚）。
+- **长栈桥** x=52，z 18→96，桥面 2.8m、宽 3.4m、T 形平台 16×9、栏杆 1.05m（狙击位）；桥头用地形垫与沙滩接平（共享物理不支持水平跨台阶）。
+- 木栈道 44 段、码头 + 2 艘搁浅渔船、30 个掩体道具、170 株植被（棕榈 40 / 阔叶 20 / 灌木 40 / 沙丘草 70）、268 个碰撞体。
+- 4 队 × 6 出生点（跨队最近 75.5m）、5 个武器箱、16 个消耗品点，全部经脚本验证可走/不压碰撞体。
+- 海面：Gerstner 波顶点位移 + 按水深颜色插值 + 菲涅尔 + 太阳高光 + 近岸白沫带 + 沙滩冲浪线（`MAP_EXTRAS.shoreline` 71 个真实水线采样点）。
+
+**郊区战场 SUBURBAN（旧，240×240m）**
+- 9 个丘陵 + 8 栋可进入房屋（含谷仓/棚屋）+ 3 座 26m 输电塔。
 - **无玻璃窗户**：共 **27 个**（每栋 3 个，谷仓 6 个），窗台 1.0m / 净高 1.2m / 净宽 1.16~1.36m；
   洞口是**真实碰撞缺口**（墙被切成窗下墙 + 过梁 + 两侧墙垛），子弹与视线可双向穿过，玩家无法从窗户钻入。
 - **室内家具**：共 **21 件**（桌 6 / 椅 4 / 床 7 / 柜 4），每栋 2~4 件，全部程序化几何合并为 **1 个 draw call**；
@@ -264,12 +308,16 @@ npm start            # 服务器监听 3001，同时托管前端与 WebSocket
 ## 测试
 
 ```bash
-node scripts/validate-world.mjs   # 世界/物理/射线/可达性（40 项）
-node scripts/smoke.mjs            # 共享逻辑 + 服务器 + WebSocket（108 项）
-node scripts/browser-test.mjs     # 真实浏览器端到端（32 项，需要本机 Chrome/Edge）
-node scripts/verify-house-data.mjs # 房屋窗户/家具/碰撞专项（24 项）
-npm run build                     # 生产构建
+node scripts/validate-tidewater.mjs # 潮汐湾地图数据专项（118 项，含真实物理模拟）
+node scripts/validate-world.mjs     # 郊区地图世界/物理/射线/可达性（40 项）
+node scripts/smoke.mjs              # 共享逻辑 + 服务器死亡竞赛 + WebSocket（121 项，两张地图通用）
+node scripts/browser-test.mjs       # 真实浏览器端到端（需要本机 Chrome/Edge）
+node scripts/verify-house-data.mjs  # 郊区房屋窗户/家具/碰撞专项（24 项）
+npm run build                       # 生产构建
 ```
+
+> `smoke.mjs` 通过 `shared/active.js` 取地图数据，所以同一套断言对两张地图都成立：
+> `MAP=tidewater node scripts/smoke.mjs` 与 `MAP=suburban node scripts/smoke.mjs` 都应全绿。
 
 `browser-test.mjs` 使用自带的极简 CDP 客户端（`scripts/cdp.mjs`）通过 TCP 调试端口驱动 Chrome：
 不依赖 Playwright，也不依赖打包（`serve-dev.mjs` 用 importmap 直接托管源码），因此在受限环境也能跑。
@@ -278,10 +326,11 @@ npm run build                     # 生产构建
 
 当前验证结果：
 
-- `validate-world.mjs`：**40/40**
-- `smoke.mjs`：**107/107**
-- `browser-test.mjs`：**32/32**（软件渲染下亦通过；截图见 `../.verify/`）
-- `vite build`：通过（dist 约 935KB JS / 28KB CSS）
+- `validate-tidewater.mjs`：**118/118**（潮汐湾地图数据 + 真实物理模拟）
+- `validate-world.mjs`：**40/40**（郊区地图）
+- `smoke.mjs`：**121/121**（潮汐湾）/ **118/118**（郊区，旧地图没有潮汐湾专属断言）
+- `browser-test.mjs`：真实浏览器端到端（软件渲染 SwiftShader 下亦通过；截图见 `.tmp/shots-tidewater/`）
+- `vite build`：通过（dist 约 1.15MB JS / 33KB CSS）
 
 ## 自动化调试接口
 
@@ -290,14 +339,17 @@ npm run build                     # 生产构建
 - `player` / `local` / `remotes` / `camera` / `world` / `effects` / `scope` / `hud` / `net`
 - `fps` / `scopeActive` / `hitmarkerPart` / `errors` / `tracerCount`（恒为 0，验证无曳光弹）
 - `send(msg)`（可直接发调试消息）、`setQuality(q)`、`serverPlayers`
-- `window.__hud` 为 HUD 实时状态（生命/弹药/开镜/命中/据点/小地图等）
+- `scores` / `standings` / `squad` / `map` / `mapMeta` / `matchInfo` / `timeLeft` / `killTarget` / `selfRank`（死亡竞赛）
+- `window.__hud` 为 HUD 实时状态（生命/弹药/开镜/命中/小队排名/小地图等）
 
-服务器 `DEBUG=1` 时支持 `debug_pos / debug_spawn_bot / debug_spawn_item / debug_zone / debug_hp / debug_score / debug_time`。
+服务器 `DEBUG=1` 时支持 `debug_pos / debug_spawn_bot / debug_spawn_item / debug_hp / debug_squad / debug_score / debug_time / debug_start / debug_end`。
 
 ## 已知限制
 
 - 全部为程序化资源（无外部模型/贴图/音频），角色/树木为风格化写实，不是扫描级资产。
-- 房屋可进入但无室内家具与二层；屋顶不参与碰撞（约定子弹可穿屋顶）。
+- 房屋可进入但无二层；郊区地图屋顶不参与碰撞（约定子弹可穿屋顶）。
+- 潮汐湾海面不参与射线（子弹入水不做判定）；海面的太阳/雾参数在创建时从 `SUN` 快照。
+- 共享物理不支持"水平跨台阶"，所以栈桥/码头靠**桥头地形垫**与沙滩接平，而不是台阶。
 - AI 使用 1m 网格，门洞过窄（约 1.3~1.6m）时 AI 不进屋，会在屋外绕行/利用外墙掩体。
 - 软件渲染（无 GPU）下帧率较低，已自动降档，建议真实 GPU 浏览器体验高画质。
 - 单房间单局，无账号/排位/房间列表系统；真人上限 8 人，AI 默认 5 个。

@@ -1,12 +1,19 @@
-// ===== 真实 FPS AI（server/ai.js，ai-nav 实现）=====
-// 目标：行为接近“普通 FPS 玩家”的机器人——会看、会听、会记、会绕障、会找掩体、会占点，
+// ===== 真实 FPS AI（server/ai.js）· 死亡竞赛版 =====
+// 玩法已从"拆弹 / 据点争夺"改为限时死亡竞赛（见 DESIGN_TIDEWATER_DM.md §4.2 与 shared/mode.js）：
+//   · 没有据点目标。行为链：巡逻 → 听到枪声 / 看到敌人 → 交战 → 找掩体
+//     → 追击最后已知位置 → 低血撤退（先找医疗包，再找掩体）→ 重新巡逻。
+//   · 小队制：同小队（p.squad，兼容 p.team）互不攻击；击杀归属击杀者所在小队。
+//   · 地图数据全部来自 shared/active.js（按 MAP 切换郊区 / 潮汐湾），不再直接 import shared/world.js。
+//
+// 目标：行为接近"普通 FPS 玩家"的机器人——会看、会听、会记、会绕障、会找掩体，
 // 但反应/枪法有误差，不是神枪手。每 200ms 决策一次，其余时间只做转向/移动/开火节奏的连续更新。
 //
 // ===== 与 server.js 的约定（ctx 由 game-server 提供，全部容错）=====
 // ctx = {
 //   players: Map<id, player> | player[],
 //   nav: nav（buildNav() 结果；缺失时 ai.js 自己 buildNav() 一次）,
-//   zones: [{ id, name, x, z, r, owner, progress, contested, counts }],
+//   zones: [],                               // 已废弃（死亡竞赛无据点），保留空数组仅为兼容
+//   squads: [{ id, name, tag, color }],      // 当前生效的小队（2~4 支）
 //   items: Map<id, {id,type,x,z}> | [],
 //   world: { WORLD, heightAt, losBlocked, raycastWorld, movePlayerHorizontal, hitboxesFor },
 //   rand: () => [0,1),                       // 可选；缺省用 Math.random
@@ -26,8 +33,8 @@
 // 开火三种约定都兼容：优先 ctx.requestFire(bot,yaw,pitch)；没有则设 wantFire + fireAt(now)
 // + fireYaw/firePitch，服务器读到后 handleShoot 即可（开完清标记）。
 import {
-  WORLD as SHARED_WORLD, ZONES as STATIC_ZONES, AI_CONFIG as SHARED_AI_CONFIG,
-} from '../shared/world.js';
+  WORLD as SHARED_WORLD, AI_CONFIG as SHARED_AI_CONFIG,
+} from '../shared/active.js';
 import {
   buildNav, findPath, nearestWalkable, randomWalkable, hasLineOfWalk, sampleCover,
 } from './nav.js';
@@ -76,8 +83,6 @@ const AI_DEFAULTS = {
 };
 export const AI_CONFIG = AI_DEFAULTS;
 
-const TEAM_INTEL_TTL = 6000;
-const ZONE_CLAIM_TTL = 8000;
 
 // 武器基础参数兜底（优先读 shared/weapons.js）
 const WEAPON_FALLBACK = {
@@ -231,7 +236,6 @@ function eyeInfo(bot, W, ctx) {
 
 // ---------- 模块级共享状态（同进程内队友共享情报 / 事件队列 / 据点占位）----------
 const teamIntel = new Map();       // team -> Map(enemyId -> {x,y,z,vx,vz,at})
-const zoneClaims = new Map();      // team -> Map(zoneId -> {botId, at})
 const lastDamagedInfo = new Map(); // botId -> { byId, x, z, at }
 const eventQueue = [];
 let eventBusBound = false;
@@ -304,8 +308,8 @@ export function createBrain(botId) {
     nextThink: 0,
     wasDead: false,
     firstThink: true,
-    // 状态机
-    state: 'objective',          // objective | hunt | combat | retreat
+    // 状态机（死亡竞赛：无 objective，改为 patrol 巡逻）
+    state: 'patrol',             // patrol | hunt | combat | retreat
     moveMode: 'hold',            // path | direct | strafe | advance | retreat | hold
     moveX: 0, moveZ: 0,
     desiredYaw: 0,
@@ -350,10 +354,11 @@ export function createBrain(botId) {
     lastX: 0, lastZ: 0, stuckSince: 0, stuckCount: 0,
     detourUntil: 0, detourX: 0, detourZ: 0,
     jumpAt: 0,
-    // 掩体 / 占点
+    // 掩体 / 巡逻（死亡竞赛没有据点，obj* 改为游走目标）
     coverPoint: null, coverThreatX: 0, coverThreatZ: 0, coverAt: 0, coverNextAt: 0,
     coverUntil: 0, inCover: false, peekAt: 0, peekUntil: 0,
-    objZoneId: null, objX: 0, objZ: 0, objAt: 0, objType: null,
+    objX: 0, objZ: 0, objAt: 0, objType: null,
+    roamGoal: null, roamAt: 0,
     patrolAt: 0,
     // 调试/错误
     lastDecision: 'idle',
@@ -498,6 +503,8 @@ function sense(bot, brain, now, ctx, cfg) {
     });
     publishIntel(bot, q.id, q.x, vis.qy, q.z, vx, vz, now);
     brain.lastSeenAt = now;
+    brain.lastThreatX = q.x;
+    brain.lastThreatZ = q.z;
 
     // 威胁评分：距离越近越优先；正在瞄我/刚打我的加分；残血目标略优先
     let score = 120 - d * 1.1;
@@ -797,15 +804,17 @@ function chooseTarget(bot, brain, now, cfg, ctx) {
   }
 }
 
-function chooseObjective(bot, brain, now, ctx, cfg) {
+// ===== 死亡竞赛游走目标（无据点）=====
+// 优先级：低血找医疗包 → 最近的听觉线索 → 按 huntBias 概率主动压向敌人所在区域 → 随机巡逻点。
+// 随机巡逻点会保留 4~9s（brain.roamGoal），避免每 tick 重选导致 AI 原地抖动。
+function chooseRoamGoal(bot, brain, now, ctx, cfg) {
   const W = worldCfg(ctx);
   const nav = navFor(ctx);
   const hp = num(bot.hp, num(W.maxHp, 100));
   const maxHp = num(W.maxHp, 100);
   const hpFrac = hp / Math.max(1, maxHp);
-  const team = bot.team || 'bravo';
 
-  // 低血且附近有医疗包 → 先去捡
+  // 1) 低血且附近有医疗包 → 先去捡（死亡竞赛唯一的"补给目标"）
   if (hpFrac < 0.6) {
     let bestItem = null, bestD = 30;
     eachItem(ctx && ctx.items, (it) => {
@@ -821,36 +830,61 @@ function chooseObjective(bot, brain, now, ctx, cfg) {
     }
   }
 
-  const zones = Array.isArray(ctx && ctx.zones) && ctx.zones.length ? ctx.zones : STATIC_ZONES;
-  let claims = zoneClaims.get(team);
-  if (!claims) { claims = new Map(); zoneClaims.set(team, claims); }
-  let best = null, bestScore = -INF;
-  for (const z of zones) {
-    if (!z || !Number.isFinite(z.x) || !Number.isFinite(z.z)) continue;
-    const d = distXZ(bot.x, bot.z, z.x, z.z);
-    const owner = z.owner || z.team || null;
-    const capturePush = Math.abs(num(z.capture, num(z.progress, 0)));
-    let score = -d * 0.12;
-    if (owner !== team) score += 55;                    // 优先占点
-    if (z.contested) score += 6;
-    if (capturePush > 0.5) score += 10;                 // 争夺已推进大半：优先去抢/回防
-    if (owner === team && capturePush < 0.75) score += 16; // 己方据点正在被推：回防
-    const claim = claims.get(z.id);
-    if (claim && claim.botId !== bot.id && now - claim.at < ZONE_CLAIM_TTL) score -= 38; // 队友已去，别扎堆
-    // 更强的分散权重：避免所有 AI 都挤到中央据点叠在一起开火（会造成客户端剧烈掉帧）
-    score -= d * 0.10;
-    if (score > bestScore) { bestScore = score; best = z; }
+  // 2) 听觉线索（枪声 / 脚步 / 被击）还新鲜 → 去看看
+  if (Number.isFinite(brain.heardX) && Number.isFinite(brain.heardZ) && now - brain.heardAt < 6000) {
+    brain.objType = 'noise';
+    return { x: brain.heardX, z: brain.heardZ };
   }
-  if (best) {
-    claims.set(best.id, { botId: bot.id, at: now });
-    brain.objZoneId = best.id;
-    brain.objType = 'zone';
-    return { x: best.x, z: best.z };
+
+  // 3) 主动找架打：以 huntBias 概率朝最近的敌人附近压过去（死亡竞赛的核心动力）
+  const huntBias = num(cfg.huntBias, 0.65);
+  if (rand01(ctx) < huntBias) {
+    let bx = NaN, bz = NaN, bestD = INF;
+    eachPlayer(ctx && ctx.players, (q) => {
+      if (!q || q === bot || q.alive === false) return;
+      if (!Number.isFinite(q.x) || !Number.isFinite(q.z)) return;
+      if (q.team != null && bot.team != null && q.team === bot.team) return;
+      const d = distXZ(bot.x, bot.z, q.x, q.z);
+      if (d < bestD) { bestD = d; bx = q.x; bz = q.z; }
+    });
+    if (Number.isFinite(bx) && Number.isFinite(bz)) {
+      // 目标点落在敌人外围 10~26m 的随机方位（不贴脸，也不远到打不到）
+      const ang = randRange(ctx, 0, TAU);
+      const r = randRange(ctx, 10, 26);
+      let gx = bx + Math.cos(ang) * r;
+      let gz = bz + Math.sin(ang) * r;
+      if (nav) {
+        const nw = nearestWalkable(nav, gx, gz);
+        if (nw) { gx = nw.x; gz = nw.z; }
+      }
+      brain.objType = 'hunt-area';
+      return { x: gx, z: gz };
+    }
   }
-  // 兜底：随机巡逻点
+
+  // 4) 随机巡逻：沿用未到期的巡逻点，否则在 roamRadius 内挑一个离自己 25m 以上的可走点
+  const roamR = num(cfg.roamRadius, 90);
+  const prev = brain.roamGoal;
+  if (prev && now - num(prev.at, 0) < 9000 && distXZ(bot.x, bot.z, prev.x, prev.z) > 4) {
+    brain.objType = 'patrol';
+    return { x: prev.x, z: prev.z };
+  }
+  let gx = bot.x, gz = bot.z;
+  if (nav) {
+    let fallback = null;
+    for (let i = 0; i < 6; i++) {
+      const p = randomWalkable(nav, () => rand01(ctx));
+      if (!p) continue;
+      fallback = p;
+      const d = distXZ(bot.x, bot.z, p.x, p.z);
+      if (d > 25 && d < roamR) { gx = p.x; gz = p.z; break; }
+    }
+    if (fallback && gx === bot.x && gz === bot.z) { gx = fallback.x; gz = fallback.z; }
+  }
+  brain.roamGoal = { x: gx, z: gz, at: now };
+  brain.roamAt = now;
   brain.objType = 'patrol';
-  const p = nav ? randomWalkable(nav, () => rand01(ctx)) : null;
-  return p ? { x: p.x, z: p.z } : { x: bot.x, z: bot.z };
+  return { x: gx, z: gz };
 }
 
 // 规划路径到 (gx,gz)。返回 true 表示有路（或直线可走）。
@@ -1085,38 +1119,37 @@ function think(bot, brain, now, ctx, cfg) {
     brain.wantCrouch = false;
     brain.lastDecision = 'hunt';
   } else {
-    // 无敌情：占点 / 防守 / 巡逻 / 捡道具
-    brain.state = 'objective';
-    const goal = chooseObjective(bot, brain, now, ctx, cfg);
+    // 无敌情：死亡竞赛巡逻（没有据点可占）
+    // 低血 → 撤退（先去医疗包 / 找远离威胁的掩体），否则主动游走找架打。
+    const hpLow = hpFrac <= num(cfg.retreatHpFrac, 0.32);
+    brain.state = hpLow ? 'retreat' : 'patrol';
+    const goal = chooseRoamGoal(bot, brain, now, ctx, cfg);
     const dGoal = distXZ(bot.x, bot.z, goal.x, goal.z);
-    // 已经在据点里且无需重新走位 → 原地防守
-    const z = brain.objZoneId ? zonesGet(ctx, brain.objZoneId) : null;
-    const inZone = z && distXZ(bot.x, bot.z, z.x, z.z) <= z.r * 0.85;
-    if (inZone && brain.objType === 'zone' && dGoal < z.r && now - brain.patrolAt < 4000) {
+    if (dGoal < 2.2) {
+      // 到达游走点：原地警戒 1~3s（低血时蹲下降低被发现的概率）
       brain.moveMode = 'hold';
       brain.wantsMove = false;
-      brain.wantCrouch = rand01(ctx) < 0.35;
-      // 面向可能来敌的方向：最近威胁方向 / 地图中心
+      brain.wantCrouch = hpLow || rand01(ctx) < 0.25;
+      brain.wantAim = false;
       if (Number.isFinite(brain.lastThreatX)) {
         brain.desiredYaw = angleTo(brain.lastThreatX - bot.x, brain.lastThreatZ - bot.z);
       } else {
-        brain.desiredYaw = angleTo(-bot.x, -bot.z);
+        brain.desiredYaw = angleTo(-bot.x, -bot.z);   // 面朝地图中心
       }
+      brain.objAt = now;
     } else {
       planTo(bot, brain, now, ctx, goal.x, goal.z, false);
       brain.wantsMove = brain.path ? true : dGoal > 1.2;
-      brain.wantSprint = dGoal > num(cfg.sprintDist, 14);
+      // 撤退时不冲刺（冲刺会放大散布且更容易被听到），其余情况远距离冲刺赶场
+      brain.wantSprint = !hpLow && dGoal > num(cfg.sprintDist, 14);
       brain.wantAim = false;
       brain.wantCrouch = false;
       brain.desiredYaw = brain.path && brain.path.length
         ? 0   // 交给 act 用移动方向
         : angleTo(goal.x - bot.x, goal.z - bot.z);
-      if (brain.patrolAt < now) {
-        brain.patrolAt = now + randRange(ctx, 2500, 4500);
-        if (inZone) brain.objAt = now;
-      }
+      if (brain.patrolAt < now) brain.patrolAt = now + randRange(ctx, 2500, 4500);
     }
-    brain.lastDecision = 'objective';
+    brain.lastDecision = brain.state;
   }
 
   // ---- 卡住/矮障碍：起跳 ----
@@ -1154,12 +1187,6 @@ function think(bot, brain, now, ctx, cfg) {
     }
   }
   brain.aimHead = brain.aimHead || false;
-}
-
-function zonesGet(ctx, id) {
-  const zs = Array.isArray(ctx && ctx.zones) && ctx.zones.length ? ctx.zones : STATIC_ZONES;
-  for (const z of zs) if (z && z.id === id) return z;
-  return null;
 }
 
 function requestReload(bot, brain, now, ctx) {

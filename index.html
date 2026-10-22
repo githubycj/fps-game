@@ -16,9 +16,9 @@
   <div id="menu" class="overlay menu-overlay">
     <div class="card menu-card">
       <header class="menu-head">
-        <div class="menu-kicker">SUBURBAN FRONT · DOMINATION</div>
-        <h1 class="title">郊区战场</h1>
-        <p class="subtitle">初秋 16:00 · 西村 — 中央广场 — 东站</p>
+        <div id="menuKicker" class="menu-kicker">TIDEWATER · DEATHMATCH</div>
+        <h1 id="menuTitle" class="title">潮汐湾</h1>
+        <p id="menuSub" class="subtitle">午后 · 沙滩 — 渔村 — 长栈桥</p>
       </header>
 
       <div class="menu-body">
@@ -63,8 +63,8 @@
             <div class="ctrl"><kbd>~</kbd><span>后台命令</span></div>
           </div>
           <p class="menu-note">
-            据点争夺：占领 <b>A / B / C</b> 据点持续得分，先到 <b>240</b> 分或时间结束时领先者获胜。
-            5 连杀呼叫全队 <b>UAV</b>，10 秒内暴露敌军位置。
+            <b>死亡竞赛</b>：限时内击杀数（人头）最多的小队获胜。全场 <b id="menuSquadCount">4</b> 支小队混战，
+            每队都有 AI 队友与 AI 敌人。5 连杀呼叫全队 <b>UAV</b>，10 秒内暴露敌军位置。
           </p>
         </section>
       </div>
@@ -99,54 +99,17 @@
       </div>
 
       <div id="scoreBar">
-        <div class="team-side team-alpha">
-          <span class="team-tag-name">ALPHA</span>
-          <span id="scoreAlpha" class="score-val mono">0</span>
-        </div>
         <div class="score-mid">
-          <span id="timer" class="mono">10:00</span>
-          <span id="modeLabel">据点争夺</span>
-          <span id="scoreTarget">先到 420 分</span>
+          <span id="timer" class="mono">8:00</span>
+          <span id="modeLabel">死亡竞赛</span>
+          <span id="scoreTarget">限时 8:00 · 人头最多获胜</span>
         </div>
-        <div class="team-side team-bravo">
-          <span id="scoreBravo" class="score-val mono">0</span>
-          <span class="team-tag-name">BRAVO</span>
-        </div>
+        <!-- 小队击杀排名板：hud.js 按击杀数降序动态渲染，自己的小队高亮 -->
+        <div id="squadBoard"></div>
       </div>
 
       <div id="zoneBar"></div>
-
-      <!-- 拆弹模式：回合比分 / 炸弹状态 -->
-      <div id="bombHud" class="hidden">
-        <div id="bombRoundScores">
-          <span class="brs alpha"><i></i><b id="brsAlpha">0</b></span>
-          <span class="brs-sep">:</span>
-          <span class="brs bravo"><b id="brsBravo">0</b><i></i></span>
-        </div>
-        <div id="bombStatus" class="hidden">
-          <span id="bombIcon">◉</span>
-          <span id="bombText">炸弹已安放</span>
-          <span id="bombTimer" class="mono">40</span>
-        </div>
-        <div id="bombCarrier" class="hidden">你携带炸弹 · 前往 A / B 点按 <b>E</b> 安放</div>
-      </div>
     </div>
-
-    <!-- 购买界面（B 键；仅拆弹模式回合开始窗口内可用） -->
-    <div id="buyMenu" class="overlay hidden">
-      <div class="card buy-card">
-        <div class="buy-head">
-          <span class="card-kicker">EQUIPMENT</span>
-          <span id="buyCredits" class="mono">$800</span>
-          <span id="buyTimer" class="mono">20s</span>
-        </div>
-        <div id="buyList"></div>
-        <div class="card-sub">按 <b>B</b> 关闭 · 点击或按数字键购买 · 回合开始 20 秒内可购买</div>
-      </div>
-    </div>
-
-    <!-- 交互提示（安放/拆除/捡包） -->
-    <div id="bombPrompt" class="hidden"><b id="bombPromptKey">E</b><span id="bombPromptText">安放炸弹</span></div>
 
     <div id="toasts"></div>
 
@@ -321,7 +284,7 @@
         <div id="warmupTitle">按 空格 开始战斗</div>
         <div id="warmupSub">点击画面锁定鼠标 · 按空格开始 10 秒倒计时</div>
         <div id="warmupCount" class="mono hidden">10</div>
-        <div class="card-sub">钢制插板已装备 · 躯干减伤 80%（受击即消耗插板）</div>
+        <div class="card-sub">钢制插板已装备 · 死亡后 3 秒复活 · 击杀数最多的小队获胜</div>
       </div>
     </div>
 
@@ -346,8 +309,10 @@
       <div class="card result-card">
         <div class="card-kicker">AFTER ACTION REPORT</div>
         <div id="matchEndTitle">胜 利</div>
-        <div id="matchEndScores" class="mono">0 : 0</div>
-        <div id="matchEndSub">据点争夺 · 最终比分</div>
+        <div id="matchEndSub">死亡竞赛 · 最终排名</div>
+        <!-- 4 队排名表：hud.js 动态渲染 -->
+        <div id="matchEndStandings"></div>
+        <div id="matchEndScores" class="mono hidden">0 : 0</div>
         <div class="card-sub">8 秒后进入下一局</div>
       </div>
     </div>

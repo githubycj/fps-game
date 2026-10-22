@@ -1,12 +1,17 @@
 // ===== 共享世界数据适配层 =====
-// 唯一数据源是 shared/world.js（Lead 维护）：地形高度场、布局、碰撞体、物理都由它提供。
+// 唯一数据源是 shared/active.js（Lead 维护，按 MAP_ID 分发到 shared/world.js 郊区地图 / shared/tidewater.js 潮汐湾地图）：
+// 地形高度场、布局、碰撞体、物理都由它提供。
 // 本文件不做任何地形/布局的复制，只做：
 //   1) 统一 re-export，场景模块只依赖这里，避免各处散落 import 路径；
 //   2) 少量纯工具函数（clamp / 插值 / 远景色地形轮廓），供程序化装饰使用；
 //   3) 对可选导出做兜底（例如缺省某些布局数组时退化为空数组），保证场景在数据版本演进时不崩。
-import * as S from '../../shared/world.js';
+// 唯一数据源是 shared/active.js（按 MAP_ID 分发到 shared/world.js 郊区地图 或 shared/tidewater.js 潮汐湾地图）
+import * as S from '../../shared/active.js';
 
 // ---------- 基础常量 ----------
+export const MAP_ID = S.MAP_ID;
+export const MAP_META = S.MAP_META;
+export const MAP_EXTRAS = S.MAP_EXTRAS || {};
 export const WORLD = S.WORLD;
 export const SUN = S.SUN;
 export const ROADS = S.ROADS || { mainWidth: 8, crossWidth: 7, plazaRadius: 13 };

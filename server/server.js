@@ -1,17 +1,23 @@
-// ===== 郊区战场 SUBURBAN FRONT · 权威游戏服务器 =====
+// ===== 潮汐湾 / 郊区 · 权威游戏服务器（死亡竞赛 Deathmatch）=====
 // 职责：
 //   1. HTTP 静态托管 dist/ + WebSocket 实时对战（同端口、单局、无房间）
-//   2. 权威移动：一律复用 shared/world.js 的地形/碰撞/物理（movePlayerHorizontal + stepPlayerPhysics）
+//   2. 权威移动：一律复用 shared/active.js 的地形/碰撞/物理（movePlayerHorizontal + stepPlayerPhysics）
 //   3. 权威命中：shared hitboxesFor 命中盒 + shared raycastWorld 世界遮挡（禁止穿墙）
-//   4. 玩法：据点争夺 Domination（3 据点 / 人数加速 / 争夺暂停 / 无人回退 / 每秒得分 / 胜负 / 8s 重置）
+//   4. 玩法：限时死亡竞赛（Team Deathmatch）——
+//        · 2~4 支小队（shared/mode.js 的 SQUADS），每队可有多个 AI
+//        · 限时 DM.timeLimit 倒数，到点按小队击杀数排名；DM.killTarget > 0 时先到即结束
+//        · 同小队互不伤害，击杀归属击杀者所在小队，出生保护 DM.spawnProtect
+//        · 旧玩法（拆弹 Search & Destroy / 据点争夺 Domination）已彻底删除：
+//          不再有炸弹、包点、回合、购买、经济、据点占领与每秒得分
 //   5. 战术机动：冲刺（体力）、蹲下、滑铲（冲刺中按蹲）、跳跃；姿态进入快照并影响散布/命中盒
-//   6. 连杀奖励：5 连杀（不死）→ 全队 UAV 10s（state 广播 uav 截止时间 + uav_start 事件）
-//   7. 道具：3 个固定武器箱（30s 刷新）+ ITEM_SPOTS 医疗/护盾/加速（8~15s 补货）
+//   6. 连杀奖励：5 连杀（不死）→ 本小队 UAV 10s（state 广播 uav 截止时间 + uav_start 事件）
+//   7. 道具：固定武器箱（30s 刷新）+ ITEM_SPOTS 医疗/护盾/加速（8~15s 补货）
 //   8. AI：server/ai.js 的 aiUpdate(bot, now, ctx) 每 200ms 决策；server/nav.js 的 buildNav() 启动时建一次；
 //      AI 移动由本服务器用共享物理推进，AI 开火由本服务器校验并调用 handleShoot
 //   9. 反作弊：消息频率限制 + 速度上限校验 + 服务器权威弹药/换弹/切枪/射速
 //
-// 说明：地形/物理/命中盒/射线绝不在本文件重复实现，全部来自 shared/world.js。
+// 说明：地形/物理/命中盒/射线绝不在本文件重复实现，全部来自 shared/active.js（按 MAP 环境变量切换地图）。
+// 地图一致性：welcome 回传 map 字段，客户端发现与自己的地图不一致时会带 ?map= 刷新。
 
 import http from 'node:http';
 import fs from 'node:fs';
@@ -20,7 +26,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 
 // ---- 共享数据模块（命名空间导入 + 兜底，防止 shared 短暂未就绪时服务器直接崩溃）----
-import * as worldMod from '../shared/world.js';
+// 注意：不再 import shared/world.js —— 那是郊区地图的固定实现，地图切换由 shared/active.js 负责。
+import * as activeMod from '../shared/active.js';
 import * as weaponsMod from '../shared/weapons.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -31,11 +38,15 @@ const DEBUG = /^(1|true|yes|on)$/i.test(String(process.env.DEBUG || ''));
 const isMain = !!(process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url);
 
 // ============================================================
-// 一、共享世界/武器数据（spec §3 §5；全部复用，不复制地形逻辑）
+// 一、共享世界/玩法/武器数据（全部复用，不复制地形与玩法常量）
 // ============================================================
 
-// 世界常量兜底（正常情况完全由 shared/world.js 提供）
-const W = worldMod.WORLD || {
+// 当前地图 id（welcome 回传给客户端做一致性校验）
+const MAP_ID = activeMod.MAP_ID || 'tidewater';
+const MAP_META = activeMod.MAP_META || { id: MAP_ID, name: MAP_ID, en: MAP_ID };
+
+// 世界常量兜底（正常情况完全由 shared/<map>.js 提供）
+const W = activeMod.WORLD || {
   size: 140, half: 70, maxPlayers: 8,
   playerRadius: 0.42, playerHeight: 1.8, crouchHeight: 1.22, slideHeight: 0.95,
   eyeHeight: 1.64, crouchEyeHeight: 1.05, slideEyeHeight: 0.82,
@@ -47,58 +58,31 @@ const W = worldMod.WORLD || {
   headY: 1.68, headR: 0.23, bodyBottom: 0.42, bodyTop: 1.57, bodyR: 0.33,
   legsBottom: 0.1, legsTop: 0.92, legsR: 0.27,
 };
-const ZONE_DEFS = worldMod.ZONES || [
-  { id: 'A', name: '西村', x: -34, z: 6, r: 9 },
-  { id: 'B', name: '中央广场', x: 0, z: 0, r: 10 },
-  { id: 'C', name: '东站', x: 34, z: 6, r: 9 },
-];
-const SPAWNS = worldMod.SPAWNS || { alpha: [{ x: 0, z: 52 }], bravo: [{ x: 0, z: -52 }], all: [] };
-const CRATE_SPOTS = worldMod.CRATE_SPOTS || [
-  { x: -34, z: 6, type: 'ak47' },
-  { x: 0, z: 0, type: 'sniper' },
-  { x: 34, z: 6, type: 'shotgun' },
-];
-const ITEM_SPOTS = worldMod.ITEM_SPOTS || [];
-const AI_CONFIG = worldMod.AI_CONFIG || {
-  max: 5, allyCount: 2, enemyCount: 3, tickMs: 200, visionRadius: 55, fovDeg: 110,
-  shootRange: 55, damageMult: 1, healthMult: 1, moveSpeedMult: 0.94,
-};
-const ZONE_CAPTURE_TIME = worldMod.ZONE_CAPTURE_TIME ?? 6;
-const ZONE_SCORE_RATE = worldMod.ZONE_SCORE_RATE ?? 1;
-const MATCH_SCORE_TARGET = worldMod.MATCH_SCORE_TARGET ?? 240;
-const MATCH_TIME_LIMIT = worldMod.MATCH_TIME_LIMIT ?? 600;
-const UAV_KILLSTREAK = worldMod.UAV_KILLSTREAK ?? 5;
-const UAV_DURATION = worldMod.UAV_DURATION ?? 10;
+const SPAWNS = activeMod.SPAWNS || { alpha: [{ x: 0, z: 0 }], bravo: [{ x: 0, z: 0 }], all: [] };
+const CRATE_SPOTS = activeMod.CRATE_SPOTS || [];
+const ITEM_SPOTS = activeMod.ITEM_SPOTS || [];
 
-const PLAYER_COLORS = worldMod.PLAYER_COLORS || [0x6f9fc4, 0x7fae8f, 0x8f9fc4, 0xb08f6f, 0x6faeae, 0xc9a06a, 0xa06f7f, 0x8fb26f];
-const BOT_COLORS = worldMod.BOT_COLORS || { ally: 0x6f9fc4, enemy: 0xc06a4e };
-
-// 共享函数（全部来自 shared/world.js）
-const heightAt = worldMod.heightAt || (() => 0);
-const zoneOf = worldMod.zoneOf || ((x, z) => {
-  for (const zn of ZONE_DEFS) {
-    const dx = x - zn.x, dz = z - zn.z;
-    if (dx * dx + dz * dz <= zn.r * zn.r) return zn;
-  }
-  return null;
-});
-const pickSpawnShared = worldMod.pickSpawn || null;
-const spawnYawShared = worldMod.spawnYaw || null;
-const movePlayerHorizontal = worldMod.movePlayerHorizontal || ((b, dx, dz) => {
+// 共享函数（全部来自 shared/active.js）
+const heightAt = activeMod.heightAt || (() => 0);
+const isWalkableAtShared = activeMod.isWalkableAt || null;
+const pickSpawnShared = activeMod.pickSpawn || null;
+const spawnYawShared = activeMod.spawnYaw || null;
+const zoneOfShared = activeMod.zoneOf || null;
+const movePlayerHorizontal = activeMod.movePlayerHorizontal || ((b, dx, dz) => {
   b.x += dx; b.z += dz;
   const lim = W.half - 3;
   b.x = Math.max(-lim, Math.min(lim, b.x));
   b.z = Math.max(-lim, Math.min(lim, b.z));
   return { blocked: false };
 });
-const stepPlayerPhysics = worldMod.stepPlayerPhysics || ((b, dt) => {
+const stepPlayerPhysics = activeMod.stepPlayerPhysics || ((b, dt) => {
   b.vy -= W.gravity * dt;
   b.y += b.vy * dt;
   const g = heightAt(b.x, b.z);
   if (b.y <= g) { b.y = g; b.vy = 0; b.grounded = true; } else { b.grounded = false; }
   return b;
 });
-const hitboxesFor = worldMod.hitboxesFor || ((p) => {
+const hitboxesFor = activeMod.hitboxesFor || ((p) => {
   const k = p.stance === 'crouch' ? 0.68 : p.stance === 'slide' ? 0.52 : 1;
   const x = p.x, y = p.y, z = p.z;
   return {
@@ -107,10 +91,10 @@ const hitboxesFor = worldMod.hitboxesFor || ((p) => {
     legs: { ax: x, ay: y + W.legsBottom * k, az: z, bx: x, by: y + W.legsTop * k, bz: z, r: W.legsR },
   };
 });
-const raycastWorldShared = worldMod.raycastWorld || null;
-const losBlockedShared = worldMod.losBlocked || null;
+const raycastWorldShared = activeMod.raycastWorld || null;
+const losBlockedShared = activeMod.losBlocked || null;
 
-// 武器数据（spec §5：伤害/爆头/腿/距离衰减/散布/弹药/换弹/ADS/射速/切枪）
+// 武器数据（伤害/爆头/腿/距离衰减/散布/弹药/换弹/ADS/射速/切枪）
 const WEAPONS = weaponsMod.WEAPONS || {};
 const STARTING_WEAPONS = weaponsMod.STARTING_WEAPONS || ['pistol', 'smg'];
 const PICKUP_WEAPONS = weaponsMod.PICKUP_WEAPONS || ['ak47', 'shotgun', 'sniper'];
@@ -127,32 +111,93 @@ const currentSpread = weaponsMod.currentSpread || ((w, o = {}) => {
   if (o.ads) s *= (w.adsSpreadMult || 0.4);
   return Math.min(s, w.spreadMax || 0.12);
 });
-const shotDamage = weaponsMod.shotDamage || ((w, { part = 'body', dist = 0 } = {}) => {
+const shotDamage = weaponsMod.shotDamage || ((w, { part = 'body' } = {}) => {
   let base = w.damage || 20;
   if (part === 'head') base *= (w.headshotMult || 2.2);
   else if (part === 'legs') base *= (w.legMult || 0.8);
   return Math.max(1, Math.round(base));
 });
 
+// ============================================================
+// 二、玩法配置（唯一来源：shared/mode.js，经 shared/active.js 透出）
+// ============================================================
+
+const DM = activeMod.DM || {
+  timeLimit: 480, killTarget: 0, countdown: 3, resetDelay: 8,
+  squadCount: 4, maxPlayers: 16, botsPerSquad: 3, autoBalance: true,
+  respawnTime: 3, spawnProtect: 1.5, spawnSpread: 12,
+  killScore: 1, suicideScore: 0, assistScore: 0, headshotScore: 1,
+  uavKillstreak: 5, uavDuration: 10, killfeedMax: 8, scoreboardTop: 5,
+};
+const ALL_SQUADS = activeMod.SQUADS || [
+  { id: 'alpha', name: '蓝队', tag: 'ALPHA', color: 0x4a86c8, ui: '#4a86c8', css: 'squad-alpha' },
+  { id: 'bravo', name: '红队', tag: 'BRAVO', color: 0xc8553f, ui: '#c8553f', css: 'squad-bravo' },
+];
+
+// 环境变量：SQUADS=2|3|4 裁剪小队数量；BOTS_PER_SQUAD 覆盖每队 AI 数
+function readSquadCount() {
+  const raw = Number(process.env.SQUADS);
+  const n = Number.isFinite(raw) && raw > 0 ? raw : DM.squadCount;
+  return Math.max(2, Math.min(ALL_SQUADS.length, n | 0));
+}
+const SQUAD_COUNT = readSquadCount();
+const SQUADS = (typeof activeMod.activeSquads === 'function')
+  ? activeMod.activeSquads(SQUAD_COUNT)
+  : ALL_SQUADS.slice(0, SQUAD_COUNT);
+const SQUAD_IDS = SQUADS.map((s) => s.id);
+const SQUAD_BY_ID = new Map(SQUADS.map((s) => [s.id, s]));
+
+function squadMeta(id) {
+  return SQUAD_BY_ID.get(id) || SQUADS[0] || { id, name: id, tag: id, color: 0x888888, ui: '#888888', css: '' };
+}
+function squadColorOf(id) {
+  return squadMeta(id).color;
+}
+// 玩家的所属小队（squad 为主字段，team 是兼容别名，两者永远同值）
+function squadIdOf(p) {
+  if (!p) return null;
+  const s = p.squad || p.team;
+  return SQUAD_BY_ID.has(s) ? s : SQUAD_IDS[0];
+}
+
+const AI_CONFIG = activeMod.AI_CONFIG || {
+  max: 12, perSquad: 3, tickMs: 200, visionRadius: 60, fovDeg: 115,
+  shootRange: 55, damageMult: 1, healthMult: 1, moveSpeedMult: 0.94,
+};
+// 每队 AI 数量：BOTS_PER_SQUAD > 旧变量 BOTS_MAX（按小队均分）> DM.botsPerSquad；总量受 AI_CONFIG.max 约束
+function readBotsPerSquad() {
+  const cap = Math.max(1, Math.floor((AI_CONFIG.max || 12) / Math.max(1, SQUAD_COUNT)));
+  const pick = (v) => {
+    if (v == null || String(v).trim() === '') return null;
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  };
+  const per = pick(process.env.BOTS_PER_SQUAD);
+  if (per != null) return Math.max(0, Math.min(cap, per | 0));
+  const legacyTotal = pick(process.env.BOTS_MAX);   // 旧脚本用 BOTS_MAX 控制全场 AI 总数
+  if (legacyTotal != null) return Math.max(0, Math.min(cap, Math.floor(legacyTotal / Math.max(1, SQUAD_COUNT))));
+  return Math.max(0, Math.min(cap, (DM.botsPerSquad || 0) | 0));
+}
+const BOTS_PER_SQUAD = readBotsPerSquad();
+const UAV_KILLSTREAK = activeMod.UAV_KILLSTREAK ?? DM.uavKillstreak ?? 5;
+const UAV_DURATION = activeMod.UAV_DURATION ?? DM.uavDuration ?? 10;
+const PLAYER_COLORS = activeMod.PLAYER_COLORS || [0x6f9fc4, 0x7fae8f, 0x8f9fc4, 0xb08f6f];
+
 // 服务器私有规则（shared 未定义的部分，集中在这里，便于 Lead/HUD 对齐）
 const RULES = {
   shieldMax: 100,             // 钢制插板（护甲）上限：出生自带
-  armorReduce: 0.8,           // 躯干减伤比例（保留给旧接口/说明）
   armorAbsorb: { body: 0.8, legs: 0.55, head: 0.3 },  // 各部位被命中时插板吸收比例
   sniperBodyDamage: 0.9,      // 狙击穿甲弹躯干强制扣除最大生命的比例（不足则致死）
   shotgunCQCRange: 12,        // 霰弹枪"近距离一击必杀"的距离（米）
-  matchCountdown: 3,          // 真人按空格后 3 秒倒计时
   speedBoostMs: 8000,         // 加速道具持续
   speedBoostMult: 1.5,        // 加速移速倍率
   pickupRadius: 1.7,          // 拾取半径
   crateRespawnMs: 30000,      // 武器箱 30s 刷新
   itemRespawnMin: 8000,       // 消耗品补货 8~15s
   itemRespawnMax: 15000,
-  matchResetDelay: 8,         // 赛后 8s 重置
-  killfeedMax: 8,
+  maxPlayers: DM.maxPlayers ?? 16,
   inputTimeoutMs: 350,        // 真人客户端输入超时（停止移动）
   maxMessagesPerSec: 200,     // 反作弊：消息频率上限
-  maxPlayers: W.maxPlayers || 8,
 };
 const CONSUMABLE_TYPES = ['medkit', 'shield', 'speed'];
 // 开镜射击散布上限（弧度，半角）：≈0.23°，100m 处偏差 < 40cm，几乎就是一个点
@@ -161,7 +206,7 @@ const TICK_MS = 1000 / (W.stateHz || 20);
 const AI_DECISION_MS = Math.max(100, AI_CONFIG.tickMs || 200);
 
 // ============================================================
-// 二、通用工具
+// 三、通用工具
 // ============================================================
 
 const DEG = Math.PI / 180;
@@ -194,9 +239,11 @@ function eyeHeightFor(p) {
   if (p.stance === 'crouch') return W.crouchEyeHeight ?? W.eyeHeight * 0.65;
   return W.eyeHeight;
 }
+// 躯干中心相对【脚底】的高度（hitboxesFor 返回的是世界坐标，这里减掉 p.y 才是相对高度）。
+// 调用方一律写成 p.y + bodyCenterY(p)；早期版本直接返回世界坐标，调用方再加一次 p.y 会把胸线抬到屋顶以上。
 function bodyCenterY(p) {
   const hb = hitboxesFor(p);
-  return (hb.body.ay + hb.body.by) * 0.5;
+  return (hb.body.ay + hb.body.by) * 0.5 - (Number.isFinite(p.y) ? p.y : 0);
 }
 const emptyInput = () => ({ mx: 0, mz: 0, jump: false, sprint: false, crouch: false, aim: false, seq: 0 });
 
@@ -255,9 +302,14 @@ function losBlocked(ox, oy, oz, ex, ey, ez) {
   const hit = rayHitWorld(ox, oy, oz, dx, dy, dz, dist);
   return !!hit && hit.t < dist - 0.15;
 }
+// 据点判定：死亡竞赛不再使用，保留一个永远返回 null 的实现给旧调用方
+function zoneOf(x, z) {
+  if (zoneOfShared) return zoneOfShared(x, z);
+  return null;
+}
 
 // ============================================================
-// 三、全局对局状态（唯一权威）
+// 四、全局对局状态（唯一权威）
 // ============================================================
 
 const players = new Map();      // id -> player（含真人 + AI）
@@ -266,78 +318,36 @@ let nextId = 1;
 let itemSeq = 1;
 let botSeq = 1;
 
-// 据点运行时状态
-const zoneRuntime = ZONE_DEFS.map((z) => ({
-  id: z.id, name: z.name, x: z.x, z: z.z, r: z.r,
-  owner: null,          // 'alpha' | 'bravo' | null
-  capture: 0,           // -1..1：负=bravo 推进，正=alpha 推进
-  contested: false,     // 双方同时在场 → 争夺暂停
-  counts: { alpha: 0, bravo: 0 },
-}));
-const scores = { alpha: 0, bravo: 0 };
+// 小队击杀数：死亡竞赛的唯一比分（每个小队一个人头 +1）
+const scores = {};
+for (const id of SQUAD_IDS) scores[id] = 0;
+
+// 对局状态机：'waiting'（等真人按空格）→ 'countdown'（DM.countdown 秒）→ 'playing' → 'ended'
 const match = {
-  // 默认拆弹模式（经典 Search & Destroy）；'domination' 仍可切换
-  mode: (worldMod.MATCH_MODE === 'domination') ? 'domination' : 'bomb',
-  // 'waiting'（等待真人按空格）→ 'countdown'（3s）→ 'playing' → 'ended'
+  mode: 'dm',
   phase: 'waiting',
   countdown: 0,
-  timeLeft: MATCH_TIME_LIMIT,
-  target: MATCH_SCORE_TARGET,
-  winner: null,
+  timeLeft: DM.timeLimit,
+  killTarget: DM.killTarget > 0 ? DM.killTarget : 0,
+  winner: null,          // 冠军小队 id（平局为 null）
+  standings: [],         // 结算快照（match_end 用）
   round: 1,
   endedAt: 0,
 };
 
-// ============================================================
-// 拆弹模式运行时状态
-// ============================================================
-const BOMB_CFG = worldMod.BOMB || {
-  roundsToWin: 5, roundTime: 105, freezeTime: 6, plantTime: 3.2, defuseTime: 5,
-  defuseTimeKit: 2.5, fuseTime: 40, plantRadius: 3.2, defuseRadius: 2.2,
-  buyTime: 20, startCredits: 800, maxCredits: 9000, winCredits: 3000, lossCredits: 1900,
-  killCredits: 300, plantCredits: 300, defuseCredits: 300, sites: ['A', 'B'],
-};
-const BUY_MENU = worldMod.BUY_MENU || [];
-const bomb = {
-  // 'idle' | 'carried' | 'planted' | 'defused' | 'exploded'
-  state: 'idle',
-  carrierId: null,
-  site: null,           // 'A' | 'B'
-  x: 0, z: 0, y: 0,
-  plantedAt: 0,
-  fuseAt: 0,            // 爆炸时间戳
-  defuseUntil: 0,       // 正在拆除的完成时间戳（0=没人拆）
-  defuseById: null,
-  plantUntil: 0,        // 正在安放的完成时间戳
-  plantById: null,
-  roundScores: { alpha: 0, bravo: 0 },
-  freezeUntil: 0,       // 回合开始冻结结束时间
-  buyUntil: 0,          // 购买窗口结束时间
-  roundEndReason: null,
-};
-// 玩家资金（p.id -> credits），每回合按胜负结算
-const credits = new Map();
-function creditsOf(p) {
-  if (!credits.has(p.id)) credits.set(p.id, BOMB_CFG.startCredits);
-  return credits.get(p.id);
-}
-function addCredits(p, n) {
-  const v = Math.max(0, Math.min(BOMB_CFG.maxCredits, creditsOf(p) + n));
-  credits.set(p.id, v);
-  send(p.ws, { t: 'credits', credits: v });
-  return v;
-}
+// 据点已删除（死亡竞赛无据点）：保留一个只读空数组，旧脚本 import { zones } 不会崩
+const zones = Object.freeze([]);
 
-const uav = { alpha: 0, bravo: 0 };   // 队伍 UAV 截止时间（epoch ms，0=无）
-const killfeed = [];                  // 最近击杀信息（state.killfeed）
+const uav = {};           // 小队 UAV 截止时间（epoch ms，0=无）
+for (const id of SQUAD_IDS) uav[id] = 0;
+const killfeed = [];      // 最近击杀信息（state.killfeed）
 
-// 固定武器箱刷新状态（拆弹模式不再使用武器箱，保留空数组以兼容旧接口）
+// 武器箱 / 消耗品固定点刷新状态
 const crateState = CRATE_SPOTS.map((spot, index) => ({ spot, index, itemId: null, respawnAt: 0 }));
-// 消耗品固定点补货状态
 const pickupSpots = ITEM_SPOTS.map((spot, index) => ({ spot, index, itemId: null, respawnAt: 0 }));
 
 // ============================================================
-// 四、AI / 导航模块接入（server/ai.js + server/nav.js，允许缺失时兜底）
+// 五、AI / 导航模块接入（server/ai.js + server/nav.js，允许缺失时兜底）
 // ============================================================
 
 let aiModule = null;
@@ -371,7 +381,7 @@ function ensureNav() {
   if (navModule && typeof navModule.buildNav === 'function') {
     try {
       NAV = navModule.buildNav();
-      if (isMain) console.log('[server] 导航网格构建完成');
+      if (isMain) console.log('[server] 导航网格构建完成（' + (NAV && NAV.n) + '×' + (NAV && NAV.n) + '，' + (NAV && NAV.buildMs) + 'ms）');
     } catch (err) {
       NAV = null;
       if (isMain) console.warn('[server] nav 构建失败，AI 使用简化导航：' + (err && err.message));
@@ -406,7 +416,7 @@ const eventBus = {
 // 兼容部分 AI 实现可能使用的 subscribe 命名
 eventBus.subscribe = (type, fn) => eventBus.on(type, fn);
 
-// AI 听觉噪声事件批（脚步声）：每次 AI 决策前把“上一批”交给 ctx.events（ai.js 按 12m/敌我过滤），
+// AI 听觉噪声事件批（脚步声）：每次 AI 决策前把"上一批"交给 ctx.events（ai.js 按 12m/敌我过滤），
 // 这样 ai.js 的 ctx.events 路径不会重复处理历史事件；同时 eventBus 也 emit 一份供未来订阅。
 let aiNoiseEvents = [];
 let aiNoiseSeq = 0;
@@ -416,12 +426,14 @@ function emitNoise(ev) {
   if (aiNoiseEvents.length > 240) aiNoiseEvents.splice(0, aiNoiseEvents.length - 240);
 }
 
-// AI 上下文（spec §6.7 ctx 字段 + 额外便利字段）
+// AI 上下文（ai.js 需要的字段 + 死亡竞赛便利字段）
 function buildAiCtx(now = Date.now(), noiseBatch = null) {
   return {
     players,
     nav: ensureNav(),
-    zones: zoneRuntime,
+    // 死亡竞赛没有据点：传空数组，ai.js 的决策逻辑不依赖它
+    zones: [],
+    squads: SQUADS,
     items,
     eventBus,
     events: noiseBatch || [],
@@ -433,11 +445,15 @@ function buildAiCtx(now = Date.now(), noiseBatch = null) {
       movePlayerHorizontal,
       stepPlayerPhysics,
       hitboxesFor,
+      isWalkableAt: isWalkableAtShared,
+      pickSpawn: pickSpawnShared,
+      spawnYaw: spawnYawShared,
       zoneOf,
     },
     rand: (min = 0, max = 1) => (typeof min === 'number' && typeof max === 'number' ? randRange(min, max) : Math.random()),
     rng: Math.random,
-    teams: ['alpha', 'bravo'],
+    teams: SQUAD_IDS,
+    dm: DM,
     requestFire: (bot, yaw, pitch) => requestBotFire(bot, yaw, pitch),
     requestReload: (bot) => (bot ? startReload(bot) : false),
     requestSwitch: (bot, id) => (bot ? switchWeapon(bot, id) : false),
@@ -452,32 +468,63 @@ function buildAiCtx(now = Date.now(), noiseBatch = null) {
 }
 
 // ============================================================
-// 五、玩家 / 出生 / 重生
+// 六、玩家 / 小队分配 / 出生 / 重生
 // ============================================================
 
 function sanitizeName(name) {
   const raw = String(name ?? '').trim().slice(0, 12);
   return raw || '玩家';
 }
-function freeSpawn(team) {
-  // 优先用 shared pickSpawn（避开碰撞体），并尽量避开其他存活玩家
-  for (let attempt = 0; attempt < 10; attempt++) {
-    let s = null;
-    if (pickSpawnShared) s = pickSpawnShared(team, Math.random);
-    if (!s) {
-      const list = SPAWNS[team] || SPAWNS.all || [];
-      s = list.length ? list[Math.floor(Math.random() * list.length)] : { x: 0, z: team === 'bravo' ? -52 : 52 };
-    }
-    let ok = true;
-    for (const p of players.values()) {
-      if (!p.alive || p === undefined) continue;
-      const dx = p.x - s.x, dz = p.z - s.z;
-      if (dx * dx + dz * dz < 2.5 * 2.5) { ok = false; break; }
-    }
-    if (ok) return s;
+// 加入时分配小队：显式指定合法小队则尊重；否则按 DM.autoBalance 选人数最少的小队
+function assignSquad(preferred) {
+  const want = String(preferred || '').toLowerCase();
+  if (want && SQUAD_BY_ID.has(want)) return want;
+  if (!DM.autoBalance) return SQUAD_IDS[0];
+  const counts = {};
+  for (const id of SQUAD_IDS) counts[id] = 0;
+  for (const p of players.values()) {
+    const s = squadIdOf(p);
+    if (s in counts) counts[s] += 1;
   }
-  const list = SPAWNS[team] || SPAWNS.all || [{ x: 0, z: 50 }];
-  return list[0];
+  let best = SQUAD_IDS[0], bestN = Infinity;
+  for (const id of SQUAD_IDS) {
+    if (counts[id] < bestN) { bestN = counts[id]; best = id; }
+  }
+  return best;
+}
+// 该小队的出生点列表（地图未给某队出生点时退化为全体出生点）
+function spawnListFor(squad) {
+  const own = SPAWNS[squad];
+  if (Array.isArray(own) && own.length) return own;
+  if (Array.isArray(SPAWNS.all) && SPAWNS.all.length) return SPAWNS.all;
+  const out = [];
+  for (const k of Object.keys(SPAWNS)) {
+    if (Array.isArray(SPAWNS[k])) out.push(...SPAWNS[k]);
+  }
+  return out.length ? out : [{ x: 0, z: 0 }];
+}
+// 出生点：优先用共享 pickSpawn（会避开碰撞体），并尽量远离其他存活玩家
+function freeSpawn(squad) {
+  const list = spawnListFor(squad);
+  let best = list[0] || { x: 0, z: 0 };
+  let bestScore = -Infinity;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    let s = null;
+    if (pickSpawnShared && SPAWNS[squad]) s = pickSpawnShared(squad, Math.random);
+    if (!s) s = list[Math.floor(Math.random() * list.length)];
+    if (!s) continue;
+    if (isWalkableAtShared && !isWalkableAtShared(s.x, s.z)) continue;
+    let minD = Infinity;
+    for (const p of players.values()) {
+      if (!p.alive) continue;
+      const d = Math.hypot(p.x - s.x, p.z - s.z);
+      if (d < minD) minD = d;
+    }
+    const score = (minD === Infinity ? 999 : minD) + Math.random() * 3;
+    if (score > bestScore) { bestScore = score; best = s; }
+    if (minD > 18) break;   // 够远了，不用再挑
+  }
+  return { x: best.x, z: best.z };
 }
 function yawForSpawn(spawn) {
   if (spawnYawShared) return normalizeYaw(spawnYawShared(spawn));
@@ -505,25 +552,29 @@ function ammoOf(p) {
   return p.ammo[p.weapon];
 }
 
-// 创建真人玩家（加入 alpha 队）
-function createPlayer(ws, name) {
-  const team = 'alpha';
-  const spawn = freeSpawn(team);
+// 创建真人玩家（squadArg 可选；默认自动平衡到人数最少的小队）
+function createPlayer(ws, name, squadArg) {
+  const squad = assignSquad(squadArg);
+  const spawn = freeSpawn(squad);
   const loadout = makeLoadout();
-  const color = PLAYER_COLORS[nextId % PLAYER_COLORS.length];
+  const meta = squadMeta(squad);
+  const now = Date.now();
   const player = {
     id: 'p' + nextId++,
     ws,
     bot: false,
     name: sanitizeName(name),
-    team,
-    color,
+    // 小队：squad 是主字段，team 是兼容别名（同值，旧代码/测试不会崩）
+    squad,
+    team: squad,
+    color: meta.color ?? PLAYER_COLORS[nextId % PLAYER_COLORS.length],
     // 位置/物理（y 为脚底高度）
     x: spawn.x, y: heightAt(spawn.x, spawn.z), z: spawn.z,
     vy: 0, grounded: true,
     yaw: yawForSpawn(spawn), pitch: 0,
     // 生命/状态
     hp: W.maxHp, maxHp: W.maxHp, alive: true, respawnAt: 0,
+    protectUntil: now + Math.round((DM.spawnProtect ?? 1.5) * 1000),
     shield: RULES.shieldMax, stamina: W.staminaMax, speedUntil: 0,
     // 机动
     stance: 'stand', sprinting: false, sliding: false, aiming: false,
@@ -538,7 +589,7 @@ function createPlayer(ws, name) {
     kills: 0, deaths: 0, streak: 0,
     // 网络
     input: emptyInput(),
-    lastInputAt: Date.now(),
+    lastInputAt: now,
     speedMult: 1,
     stepDist: 0,
     cheatCount: 0,
@@ -558,10 +609,11 @@ function ensureWeaponValid(p) {
   }
 }
 
-// 重生：回本队出生区，补满血量/体力/弹药（不没收已拾取武器）
+// 重生：回本队出生区，补满血量/体力/弹药（不没收已拾取武器），并获得出生保护
 function respawn(p) {
-  const team = p.team || 'alpha';
-  const spawn = freeSpawn(team);
+  const squad = squadIdOf(p);
+  const spawn = freeSpawn(squad);
+  const now = Date.now();
   p.x = spawn.x;
   p.z = spawn.z;
   p.y = heightAt(spawn.x, spawn.z);
@@ -572,6 +624,7 @@ function respawn(p) {
   p.hp = p.maxHp ?? W.maxHp;
   p.alive = true;
   p.respawnAt = 0;
+  p.protectUntil = now + Math.round((DM.spawnProtect ?? 1.5) * 1000);
   p.shield = RULES.shieldMax;
   p.speedUntil = 0;
   p.stamina = W.staminaMax;
@@ -589,39 +642,29 @@ function respawn(p) {
   p.burst = 0;
   p.streak = 0;
   p.input = emptyInput();
-  p.lastInputAt = Date.now();
+  p.lastInputAt = now;
   p.speedNow = 0;
   p.stepDist = 0;
   ensureWeaponValid(p);
   for (const id of Object.keys(p.owned)) p.ammo[id] = fullAmmo(id);
   send(p.ws, {
     t: 'respawn', id: p.id, x: round3(p.x), y: round3(p.y), z: round3(p.z), yaw: p.yaw,
+    squad, team: squad, protect: Math.max(0, p.protectUntil - now),
   });
   return p;
 }
 
 // ============================================================
-// 六、快照 / 消息
+// 七、快照 / 消息
 // ============================================================
 
-function uavDeadline(team, now = Date.now()) {
-  return (uav[team] || 0) > now ? uav[team] : 0;
+function uavDeadline(squad, now = Date.now()) {
+  return (uav[squad] || 0) > now ? uav[squad] : 0;
 }
-function zoneSnapshot() {
-  return zoneRuntime.map((z) => {
-    const abs = Math.min(1, Math.abs(z.capture));
-    let capturing = null;
-    if (abs < 0.999) capturing = z.capture > 0 ? 'alpha' : z.capture < 0 ? 'bravo' : null;
-    return {
-      id: z.id, name: z.name, x: z.x, z: z.z, r: z.r,
-      owner: z.owner,
-      progress: abs,
-      capture: z.capture,
-      capturing,
-      contested: z.contested,
-      counts: { alpha: z.counts.alpha, bravo: z.counts.bravo },
-    };
-  });
+function uavSnapshot(now = Date.now()) {
+  const out = {};
+  for (const id of SQUAD_IDS) out[id] = uavDeadline(id, now);
+  return out;
 }
 function itemSnapshot(it) {
   return {
@@ -632,11 +675,14 @@ function itemSnapshot(it) {
 function snapshot(p) {
   const now = Date.now();
   const a = p.ammo && p.ammo[p.weapon] ? p.ammo[p.weapon] : { mag: 0, reserve: 0 };
+  const squad = squadIdOf(p);
   return {
     id: p.id,
     name: p.name,
     color: p.color,
-    team: p.team,
+    // 小队：squad 为主字段，team 同值（旧客户端/测试兼容）
+    squad,
+    team: squad,
     x: round3(p.x), y: round3(p.y), z: round3(p.z),
     yaw: p.yaw, pitch: p.pitch,
     hp: p.hp, maxHp: p.maxHp ?? W.maxHp,
@@ -644,6 +690,8 @@ function snapshot(p) {
     shield: p.shield || 0,
     // GOD 无敌剩余时间（ms，0 = 未开启），客户端据此显示标记
     god: (p.godUntil || 0) > now ? (p.godUntil - now) : 0,
+    // 出生保护剩余时间（ms，0 = 已失效）
+    protect: (p.protectUntil || 0) > now ? (p.protectUntil - now) : 0,
     stamina: Math.round(p.stamina ?? W.staminaMax),
     weapon: p.weapon,
     ammo: { mag: a.mag, reserve: a.reserve === Infinity ? -1 : a.reserve },
@@ -660,76 +708,119 @@ function snapshot(p) {
     deaths: p.deaths || 0,
     streak: p.streak || 0,
     speed: now < (p.speedUntil || 0),
-    uav: now < (uav[p.team] || 0),
+    uav: now < (uav[squad] || 0),
     respawnIn: p.alive ? 0 : Math.max(0, Math.ceil(((p.respawnAt || 0) - now) / 1000)),
-    // 拆弹模式：每人自己的资金（客户端购买界面显示）
-    credits: match.mode === 'bomb' ? creditsOf(p) : undefined,
     bot: p.bot ? true : undefined,
+  };
+}
+// 小队排名（击杀数降序；同分按队内个人击杀总和、再按小队顺序）
+function standings() {
+  const rows = SQUADS.map((s) => {
+    let count = 0, alive = 0, playerKills = 0, deaths = 0;
+    for (const p of players.values()) {
+      if (squadIdOf(p) !== s.id) continue;
+      count += 1;
+      if (p.alive) alive += 1;
+      playerKills += p.kills || 0;
+      deaths += p.deaths || 0;
+    }
+    return {
+      id: s.id,
+      name: s.name,
+      tag: s.tag,
+      color: s.color,
+      ui: s.ui,
+      css: s.css,
+      kills: scores[s.id] || 0,
+      playerKills,
+      deaths,
+      players: count,
+      alive,
+    };
+  });
+  rows.sort((a, b) => (b.kills - a.kills) || (b.playerKills - a.playerKills) || (b.alive - a.alive));
+  for (let i = 0; i < rows.length; i++) {
+    rows[i].rank = i + 1;
+    rows[i].leading = i === 0 && rows[i].kills > 0;
+  }
+  return rows;
+}
+// 领先小队（用于 killTarget 判定）
+function leadingSquad() {
+  let best = null, bestN = 0;
+  for (const id of SQUAD_IDS) {
+    const n = scores[id] || 0;
+    if (n > bestN) { bestN = n; best = id; }
+  }
+  return best;
+}
+function matchSnapshot() {
+  return {
+    mode: match.mode,
+    phase: match.phase,
+    countdown: Math.max(0, Math.ceil(match.countdown)),
+    timeLeft: Math.max(0, Math.ceil(match.timeLeft)),
+    killTarget: match.killTarget,
+    target: match.killTarget,     // 旧字段名兼容
+    winner: match.winner,
+    round: match.round,
   };
 }
 function stateMessage(now = Date.now()) {
   const list = [];
   for (const p of players.values()) list.push(snapshot(p));
+  const sc = {};
+  for (const id of SQUAD_IDS) sc[id] = scores[id] || 0;
   return {
     t: 'state',
     ts: now,
+    map: MAP_ID,
     players: list,
     items: [...items.values()].map(itemSnapshot),
-    zones: zoneSnapshot(),
-    scores: { alpha: Math.round(scores.alpha * 10) / 10, bravo: Math.round(scores.bravo * 10) / 10 },
-    match: {
-      mode: match.mode,
-      phase: match.phase,
-      countdown: Math.max(0, Math.ceil(match.countdown)),
-      timeLeft: Math.max(0, Math.ceil(match.timeLeft)),
-      target: match.target,
-      winner: match.winner,
-      round: match.round,
-      roundScores: { ...bomb.roundScores },
-    },
-    // 拆弹模式状态（客户端 HUD / 小地图 / 炸弹标记用）
-    bomb: match.mode === 'bomb' ? {
-      state: bomb.state,
-      carrierId: bomb.carrierId,
-      site: bomb.site,
-      x: round3(bomb.x), y: round3(bomb.y), z: round3(bomb.z),
-      fuseLeft: bomb.state === 'planted' ? Math.max(0, Math.ceil((bomb.fuseAt - now) / 1000)) : 0,
-      plantLeft: bomb.plantUntil > 0 ? Math.max(0, +((bomb.plantUntil - now) / 1000).toFixed(1)) : 0,
-      defuseLeft: bomb.defuseUntil > 0 ? Math.max(0, +((bomb.defuseUntil - now) / 1000).toFixed(1)) : 0,
-      defuseById: bomb.defuseById,
-      freezeLeft: Math.max(0, +((bomb.freezeUntil - now) / 1000).toFixed(1)),
-      buyLeft: Math.max(0, +((bomb.buyUntil - now) / 1000).toFixed(1)),
-      sites: bombSiteList().map((s) => ({ id: s.id, name: s.name, x: s.x, z: s.z, r: s.r })),
-    } : null,
-    uav: { alpha: uavDeadline('alpha', now), bravo: uavDeadline('bravo', now) },
-    killfeed: killfeed.slice(-RULES.killfeedMax),
+    // 死亡竞赛比分：每个小队一个人头 +1
+    scores: sc,
+    standings: standings(),
+    match: matchSnapshot(),
+    // 据点已删除：保留空数组只为避免旧下游代码读到 undefined
+    zones: [],
+    uav: uavSnapshot(now),
+    killfeed: killfeed.slice(-(DM.killfeedMax || 8)),
     env: { mode: worldEnv.mode },
   };
-}function welcomeMessage(p) {
+}
+function squadsPayload() {
+  return SQUADS.map((s) => ({
+    id: s.id, name: s.name, tag: s.tag, color: s.color, ui: s.ui, css: s.css,
+  }));
+}
+function welcomeMessage(p) {
+  const now = Date.now();
+  const sc = {};
+  for (const id of SQUAD_IDS) sc[id] = scores[id] || 0;
+  const squad = squadIdOf(p);
   return {
     t: 'welcome',
     id: p.id,
+    name: p.name,
     color: p.color,
-    team: p.team,
-    spawn: { x: round3(p.x), y: round3(p.y), z: round3(p.z), yaw: p.yaw, team: p.team },
+    // 小队（squad 主字段 + team 兼容别名）
+    squad,
+    team: squad,
+    squads: squadsPayload(),
+    spawn: { x: round3(p.x), y: round3(p.y), z: round3(p.z), yaw: p.yaw, squad, team: squad },
     maxPlayers: RULES.maxPlayers,
     players: [...players.values()].map(snapshot),
-    zones: zoneSnapshot(),
     items: [...items.values()].map(itemSnapshot),
+    // 地图 id：客户端与自身不一致时会带 ?map= 刷新，保证地形/碰撞两侧一致
+    map: MAP_ID,
+    mapMeta: { id: MAP_META.id, name: MAP_META.name, en: MAP_META.en },
     mode: match.mode,
-    match: {
-      mode: match.mode, phase: match.phase, countdown: Math.max(0, Math.ceil(match.countdown)),
-      timeLeft: Math.max(0, Math.ceil(match.timeLeft)),
-      target: match.target, winner: match.winner,
-    },
-    scores: { alpha: Math.round(scores.alpha * 10) / 10, bravo: Math.round(scores.bravo * 10) / 10 },
-    uav: { alpha: uavDeadline('alpha'), bravo: uavDeadline('bravo') },
+    match: matchSnapshot(),
+    scores: sc,
+    standings: standings(),
+    uav: uavSnapshot(now),
+    killfeed: killfeed.slice(-(DM.killfeedMax || 8)),
     env: { mode: worldEnv.mode },
-    // 拆弹模式：购买菜单 + 初始资金 + 当前回合比分
-    bombConfig: match.mode === 'bomb' ? BOMB_CFG : null,
-    buyMenu: match.mode === 'bomb' ? BUY_MENU : null,
-    credits: creditsOf(p),
-    roundScores: { ...bomb.roundScores },
   };
 }
 
@@ -756,7 +847,7 @@ function broadcastExcept(ws, msg) {
 }
 
 // ============================================================
-// 七、武器：换弹 / 切枪 / 拾取
+// 八、武器：换弹 / 切枪 / 拾取
 // ============================================================
 
 function startReload(p) {
@@ -815,7 +906,7 @@ function grantWeapon(p, id, opts = {}) {
   p.ammo = p.ammo || {};
   p.owned[id] = true;
   p.ammo[id] = { mag: w.magSize ?? 12, reserve: w.reserveStart ?? Infinity };
-  if (p.bot) p.ammo[id].reserve = Infinity;   // AI 备弹无限，避免长时间对局里“弹尽人亡”
+  if (p.bot) p.ammo[id].reserve = Infinity;   // AI 备弹无限，避免长时间对局里"弹尽人亡"
   if (p.weapon === id) {
     p.reloadUntil = 0;
     return true;
@@ -836,7 +927,7 @@ function grantWeapon(p, id, opts = {}) {
 }
 
 // ============================================================
-// 八、道具：武器箱 + 消耗品
+// 九、道具：武器箱 + 消耗品
 // ============================================================
 
 function createItem(kind, type, x, z, extra = {}) {
@@ -866,24 +957,18 @@ function spawnPickupSpot(index, type) {
   st.respawnAt = 0;
   return it;
 }
-// 初始化地图道具：3 个固定武器箱 + ITEM_SPOTS 消耗品（ITEMS_MAX 控制消耗品数量）
+// 初始化地图道具：武器箱 + ITEM_SPOTS 消耗品（ITEMS_MAX 控制消耗品数量）
 function initItems() {
   // 对账：状态里有 itemId 但 items 已被清空（测试/重置场景）时重新生成
   for (const st of crateState) if (st.itemId && !items.has(st.itemId)) { st.itemId = null; st.respawnAt = 0; }
   for (const st of pickupSpots) if (st.itemId && !items.has(st.itemId)) { st.itemId = null; st.respawnAt = 0; }
-  // 拆弹模式：不再生成武器箱（改用购买系统），只保留医疗包等消耗品
-  if (match.mode !== 'bomb') {
-    for (let i = 0; i < crateState.length; i++) spawnCrate(i);
-  }
+  for (let i = 0; i < crateState.length; i++) spawnCrate(i);
   const max = Math.max(0, Number(process.env.ITEMS_MAX ?? pickupSpots.length));
   for (let i = 0; i < Math.min(max, pickupSpots.length); i++) spawnPickupSpot(i);
 }
 function updateItemRespawns(now) {
-  // 拆弹模式跳过武器箱刷新
-  if (match.mode !== 'bomb') {
-    for (const st of crateState) {
-      if (!st.itemId && st.respawnAt && now >= st.respawnAt) spawnCrate(st.index);
-    }
+  for (const st of crateState) {
+    if (!st.itemId && st.respawnAt && now >= st.respawnAt) spawnCrate(st.index);
   }
   for (const st of pickupSpots) {
     if (!st.itemId && st.respawnAt && now >= st.respawnAt) spawnPickupSpot(st.index);
@@ -967,20 +1052,22 @@ function updatePickups(now = Date.now()) {
 }
 
 // ============================================================
-// 九、战斗：命中判定 / 伤害 / 击杀 / UAV
+// 十、战斗：命中判定 / 伤害 / 击杀 / UAV / 计分
 // ============================================================
 
-// 友军伤害规则：AI 绝不误伤友军；两名真人同队时允许误伤（便于调试/测试），队友 AI 不受真人伤害
+// 伤害规则（死亡竞赛）：只允许跨小队互相伤害；出生保护期间免疫。
+// 同小队（含真人队友、AI 队友）一律不友伤。
 function canDamage(attacker, target) {
   if (!attacker || !target || attacker === target) return false;
   if (!target.alive) return false;
-  if (attacker.team === target.team && (attacker.bot || target.bot)) return false;
+  if (squadIdOf(attacker) === squadIdOf(target)) return false;      // 同队不友伤
+  if ((target.protectUntil || 0) > Date.now()) return false;        // 出生保护
   return true;
 }
 
 // 沿射线找最近的可命中目标：共享命中盒 + 共享世界射线遮挡
 // 部位判定：先取 head / body / legs 三者的最近交点，再按命中点高度归入部位。
-// （共享命中盒的 body 胶囊顶端球帽会包住头部、底端球帽会压住大腿，纯“最近几何体”会把爆头算成躯干，
+// （共享命中盒的 body 胶囊顶端球帽会包住头部、底端球帽会压住大腿，纯"最近几何体"会把爆头算成躯干，
 //   因此这里按命中点高度带分类：≥ 头部球底 → 爆头；≤ 腿部胶囊顶 → 腿部；其余 → 躯干。）
 function findHit(p, ox, oy, oz, dx, dy, dz, range) {
   let best = null;
@@ -1015,34 +1102,52 @@ function findHit(p, ox, oy, oz, dx, dy, dz, range) {
 
 function registerKillfeed(entry) {
   killfeed.push(entry);
-  while (killfeed.length > RULES.killfeedMax) killfeed.shift();
+  const max = DM.killfeedMax || 8;
+  while (killfeed.length > max) killfeed.shift();
 }
 
+// 击杀结算：victim 记死亡、killer 记击杀、killer 所在小队 +DM.killScore 分、写 killfeed
 function onKill(killer, victim, part) {
   const now = Date.now();
   victim.alive = false;
   victim.hp = 0;
   victim.deaths = (victim.deaths || 0) + 1;
   victim.streak = 0;
-  victim.respawnAt = now + Math.round((W.respawnTime ?? 3) * 1000);
+  victim.protectUntil = 0;
+  victim.respawnAt = now + Math.round((DM.respawnTime ?? W.respawnTime ?? 3) * 1000);
   victim.input = emptyInput();
   victim.reloadUntil = 0;
   victim.swapUntil = 0;
   victim.sprinting = false;
   victim.sliding = false;
   victim.aiming = false;
-  if (killer) {
+
+  const killerSquad = killer && killer !== victim ? squadIdOf(killer) : null;
+  const victimSquad = squadIdOf(victim);
+  const killerMeta = killerSquad ? squadMeta(killerSquad) : null;
+  const victimMeta = squadMeta(victimSquad);
+  if (killer && killer !== victim) {
     killer.kills = (killer.kills || 0) + 1;
     killer.streak = (killer.streak || 0) + 1;
+    // 击杀归属：给 killer 所在小队 +1（自杀不给自己加分）
+    if (match.phase === 'playing' && killerSquad) {
+      scores[killerSquad] = (scores[killerSquad] || 0) + (DM.killScore ?? 1);
+    }
   }
   const entry = {
     at: now,
     killerId: killer ? killer.id : null,
     killerName: killer ? killer.name : '环境',
-    killerTeam: killer ? killer.team : null,
+    killerSquad,
+    killerTeam: killerSquad,
+    killerSquadName: killerMeta ? killerMeta.name : '',
+    killerColor: killerMeta ? killerMeta.color : null,
     victimId: victim.id,
     victimName: victim.name,
-    victimTeam: victim.team,
+    victimSquad,
+    victimTeam: victimSquad,
+    victimSquadName: victimMeta.name,
+    victimColor: victimMeta.color,
     weapon: killer ? killer.weapon : null,
     headshot: part === 'head',
     part,
@@ -1054,72 +1159,55 @@ function onKill(killer, victim, part) {
     id: victim.id,
     victimId: victim.id,
     victimName: victim.name,
-    victimTeam: victim.team,
+    victimSquad,
+    victimTeam: victimSquad,
     killerId: killer ? killer.id : null,
     killerName: killer ? killer.name : '环境',
-    killerTeam: killer ? killer.team : null,
+    killerSquad,
+    killerTeam: killerSquad,
     weapon: entry.weapon,
     part,
     headshot: entry.headshot,
     streak: entry.streak,
+    scores: { ...scores },
     x: round3(victim.x),
     y: round3(victim.y),
     z: round3(victim.z),
     killfeed: entry,
   });
-  // 连杀提示（>=2 连杀广播，main.js/HUD 可做 toast）
+  // 连杀提示（>=2 连杀广播，HUD 可做 toast）
   if (killer && killer.streak >= 2) {
-    broadcast({ t: 'streak', playerId: killer.id, name: killer.name, streak: killer.streak });
+    broadcast({
+      t: 'streak', playerId: killer.id, name: killer.name, streak: killer.streak,
+      squad: killerSquad, team: killerSquad,
+    });
   }
   eventBus.emit('death', entry);
-  // 拆弹模式：击杀奖励 + 携带者阵亡则掉包 + 进攻方全灭则防守方胜
-  if (match.mode === 'bomb' && match.phase === 'playing') {
-    if (killer) addCredits(killer, BOMB_CFG.killCredits);
-    onBombCarrierDied(victim);
-    checkRoundElimination();
-  }
-  // 5 连杀（不死）→ 全队 UAV 10s
-  if (killer && killer.streak > 0 && killer.streak % UAV_KILLSTREAK === 0) triggerUav(killer);
-}
-
-/** 拆弹模式：一方全部阵亡时判胜负 */
-function checkRoundElimination() {
-  if (match.mode !== 'bomb' || match.phase !== 'playing') return;
-  let alphaAlive = 0, bravoAlive = 0;
-  for (const p of players.values()) {
-    if (!p.alive) continue;
-    if (p.team === 'alpha') alphaAlive += 1;
-    else if (p.team === 'bravo') bravoAlive += 1;
-  }
-  // 炸弹已安放时，进攻方全灭不算输（炸弹还在倒计时）
-  if (alphaAlive === 0 && bomb.state !== 'planted') {
-    endRound('bravo', 'elimination');
-    return;
-  }
-  if (bravoAlive === 0) {
-    // 防守方全灭：若炸弹已安放，直接判进攻方胜；否则也要等安放/时间到
-    if (bomb.state === 'planted') endRound('alpha', 'elimination');
-    else if (bomb.state === 'carried' || bomb.state === 'dropped') {
-      // 防守方全灭且炸弹未安放 → 进攻方可以安全安放，直接判胜更符合快节奏
-      endRound('alpha', 'elimination');
-    }
+  // 连杀奖励：每 UAV_KILLSTREAK 连杀 → 本小队 UAV
+  if (killer && killer !== victim && killer.streak > 0 && killer.streak % UAV_KILLSTREAK === 0) triggerUav(killer);
+  // 先到击杀目标 → 立刻结束本局
+  if (match.phase === 'playing' && match.killTarget > 0 && killerSquad &&
+    (scores[killerSquad] || 0) >= match.killTarget) {
+    endMatch('killtarget');
   }
 }
 
 function triggerUav(p) {
   const now = Date.now();
+  const squad = squadIdOf(p);
   const until = now + UAV_DURATION * 1000;
-  uav[p.team] = Math.max(uav[p.team] || 0, until);
+  uav[squad] = Math.max(uav[squad] || 0, until);
   broadcast({
     t: 'uav_start',
-    team: p.team,
+    squad,
+    team: squad,          // 兼容旧字段
     duration: UAV_DURATION,
     until,
     byId: p.id,
     byName: p.name,
     streak: p.streak,
   });
-  eventBus.emit('uav', { team: p.team, until, byId: p.id });
+  eventBus.emit('uav', { squad, team: squad, until, byId: p.id });
 }
 
 // 服务器权威开火：校验射速/弹药/切枪/换弹 → 散布 → 多弹丸 → 共享命中盒 + 世界遮挡 → 伤害
@@ -1128,8 +1216,6 @@ function handleShoot(p, msg = {}) {
   // 只有正式开赛后才能开火（等待/倒计时阶段禁止对枪）
   if (match.phase !== 'playing') return false;
   const now = Date.now();
-  // 拆弹模式：回合开始的冻结时间内禁止开火（双方都站着买枪）
-  if (match.mode === 'bomb' && now < (bomb.freezeUntil || 0)) return false;
   if (now < (p.swapUntil || 0)) return false;                       // 切枪硬直
   if ((p.reloadUntil || 0) > 0) return false;                       // 换弹中
   const w = weaponOf(p.weapon);
@@ -1147,8 +1233,8 @@ function handleShoot(p, msg = {}) {
   a.mag -= 1;
 
   // 朝向以客户端上报为准（已做范围钳制），并同步到服务器状态
-  let baseYaw = normalizeYaw(clampNum(msg.yaw ?? p.yaw, -8 * Math.PI, 8 * Math.PI));
-  let basePitch = clampNum(msg.pitch ?? p.pitch, -1.5, 1.5);
+  const baseYaw = normalizeYaw(clampNum(msg.yaw ?? p.yaw, -8 * Math.PI, 8 * Math.PI));
+  const basePitch = clampNum(msg.pitch ?? p.pitch, -1.5, 1.5);
   p.yaw = baseYaw;
   p.pitch = basePitch;
 
@@ -1165,19 +1251,21 @@ function handleShoot(p, msg = {}) {
   if (aimingShot) p.aimAckAt = now;
   const ox = p.x, oz = p.z, oy = p.y + eyeHeightFor(p);
   const eyeDir = dirFromYawPitch(baseYaw, basePitch);
+  const squad = squadIdOf(p);
   // 广播开火：远程玩家播放枪声/枪口焰/弹壳（无曳光弹）
   broadcastExcept(p.ws, {
     t: 'shot',
     shooterId: p.id,
     shooterName: p.name,
-    team: p.team,
+    squad,
+    team: squad,
     weapon: p.weapon,
     x: round3(ox), y: round3(oy), z: round3(oz),
     dx: round3(eyeDir.x), dy: round3(eyeDir.y), dz: round3(eyeDir.z),
     at: now,
   });
   eventBus.emit('shot', {
-    shooterId: p.id, team: p.team, weapon: p.weapon,
+    shooterId: p.id, squad, team: squad, weapon: p.weapon,
     x: ox, y: oy, z: oz, at: now,
   });
 
@@ -1315,12 +1403,13 @@ function handleShoot(p, msg = {}) {
       hp: target.hp,
       shield: target.shield || 0,
       absorbed: Math.round(absorbed),
-      team: p.team,
+      squad,
+      team: squad,
     };
     send(p.ws, hitMsg);
     send(target.ws, hitMsg);
     eventBus.emit('damaged', {
-      targetId: target.id, byId: p.id, team: p.team,
+      targetId: target.id, byId: p.id, squad, team: squad,
       x: target.x, y: target.y, z: target.z, hp: target.hp, at: nowAfter,
     });
     if (killed) onKill(p, target, part);
@@ -1329,9 +1418,6 @@ function handleShoot(p, msg = {}) {
 }
 
 // AI 开火请求：走与真人相同的权威校验（射速/弹药由 handleShoot 统一把关）
-// 不再做"同帧限流"——那会让 AI 的连发被打断成断续单发。
-// 现在每个 AI 的射击间隔由 ai.js 的 burst 节奏 + 射速倍率决定，
-// 且各 AI 的决策子帧天然错开，不会出现同一帧齐射。
 function requestBotFire(bot, yaw, pitch) {
   if (!bot || !bot.alive) return false;
   return handleShoot(bot, {
@@ -1341,7 +1427,7 @@ function requestBotFire(bot, yaw, pitch) {
 }
 
 // ============================================================
-// 十、移动 / 机动（冲刺 / 蹲 / 滑铲 / 跳跃）——全部使用共享物理
+// 十一、移动 / 机动（冲刺 / 蹲 / 滑铲 / 跳跃）——全部使用共享物理
 // ============================================================
 
 function moveSpeedFor(p) {
@@ -1351,7 +1437,7 @@ function moveSpeedFor(p) {
   else if (p.stance === 'crouch') base = W.crouchSpeed;
   else if (p.sprinting) base = W.sprintSpeed;
   else base = W.walkSpeed;
-  if (p.aiming && !p.sprinting && p.stance !== 'slide') base *= (W.adsSpeedMult ?? W.adAdsSpeedMult ?? 0.55);
+  if (p.aiming && !p.sprinting && p.stance !== 'slide') base *= (W.adsSpeedMult ?? 0.55);
   base *= (w.moveSpeedMult ?? 1);
   base *= (p.speedMult ?? 1);
   if (Date.now() < (p.speedUntil || 0)) base *= RULES.speedBoostMult;
@@ -1370,7 +1456,7 @@ function startSlide(p, now, mx, mz) {
   p.slideDirZ = dz;
   p.stance = 'slide';
   p.sprinting = false;
-  eventBus.emit('slide', { id: p.id, x: p.x, y: p.y, z: p.z, team: p.team });
+  eventBus.emit('slide', { id: p.id, x: p.x, y: p.y, z: p.z, squad: squadIdOf(p) });
 }
 function endSlide(p, wantCrouch) {
   p.sliding = false;
@@ -1390,7 +1476,7 @@ function updatePlayer(p, dt) {
     return;
   }
 
-  // 真人长时间没输入 → 停止移动（防“幽灵移动”）
+  // 真人长时间没输入 → 停止移动（防"幽灵移动"）
   if (!p.bot && now - (p.lastInputAt || 0) > RULES.inputTimeoutMs) p.input = emptyInput();
 
   const inp = p.input || emptyInput();
@@ -1427,7 +1513,7 @@ function updatePlayer(p, dt) {
     p.grounded = false;
     p.stamina = Math.max(0, (p.stamina ?? 0) - (W.jumpStaminaCost ?? 12));
     if (p.sliding) { p.sliding = false; p.stance = wantCrouch ? 'crouch' : 'stand'; }
-    eventBus.emit('jump', { id: p.id, x: p.x, y: p.y, z: p.z, team: p.team });
+    eventBus.emit('jump', { id: p.id, x: p.x, y: p.y, z: p.z, squad: squadIdOf(p) });
   }
 
   // —— 位移（共享 movePlayerHorizontal：坡度限制 + 碰撞体推出 + 边界） ——
@@ -1467,7 +1553,7 @@ function updatePlayer(p, dt) {
     if (p.stepDist >= stride) {
       p.stepDist = 0;
       const noise = {
-        kind: 'footstep', type: 'step', id: p.id, team: p.team,
+        kind: 'footstep', type: 'step', id: p.id, squad: squadIdOf(p), team: squadIdOf(p),
         x: round3(p.x), y: round3(p.y), z: round3(p.z),
         sprint: !!p.sprinting, sliding: !!p.sliding, crouch: p.stance === 'crouch',
       };
@@ -1502,466 +1588,151 @@ function separatePlayers() {
 }
 
 // ============================================================
-// 十一、据点争夺 / 计分 / 比赛流程
+// 十二、对局流程（死亡竞赛：等待 → 倒计时 → 进行 → 结算 → 重置）
 // ============================================================
 
-function zoneCounts() {
-  for (const z of zoneRuntime) { z.counts.alpha = 0; z.counts.bravo = 0; }
-  for (const p of players.values()) {
-    if (!p.alive) continue;
-    const zn = zoneOf(p.x, p.z);
-    if (!zn) continue;
-    const rt = zoneRuntime.find((z) => z.id === zn.id);
-    if (!rt) continue;
-    if (p.team === 'alpha') rt.counts.alpha += 1;
-    else if (p.team === 'bravo') rt.counts.bravo += 1;
-  }
-}
-function onZoneCaptured(z, team, prevOwner) {
-  broadcast({
-    t: 'zone_capture',
-    zone: z.id,
-    zoneId: z.id,
-    id: z.id,
-    name: z.name,
-    team,
-    owner: team,
-    progress: 1,
-    prevOwner: prevOwner || null,
-  });
-  if (prevOwner && prevOwner !== team) {
-    broadcast({ t: 'zone_lost', zone: z.id, zoneId: z.id, name: z.name, team: prevOwner, by: team });
-  }
-  eventBus.emit('zone_capture', { zone: z.id, team, prevOwner: prevOwner || null });
-}
-function updateZones(dt) {
-  zoneCounts();
-  // 赛后结算的 8 秒内冻结据点推进（比分/归属保持最终结果，重置时统一清零）
-  if (match.phase !== 'playing') return;
-  const baseRate = 1 / Math.max(0.5, ZONE_CAPTURE_TIME);
-  for (const z of zoneRuntime) {
-    const a = z.counts.alpha, b = z.counts.bravo;
-    z.contested = a > 0 && b > 0;
-    if (z.contested) continue;   // 双方都在点内 → 争夺暂停
-    if (a > 0 || b > 0) {
-      const team = a > 0 ? 'alpha' : 'bravo';
-      const count = Math.max(a, b);
-      const speedMult = Math.min(2.5, 1 + 0.5 * (count - 1));   // 人数加速
-      const dir = team === 'alpha' ? 1 : -1;
-      z.capture = clampNum(z.capture + dir * baseRate * speedMult * dt, -1, 1);
-      if (dir > 0 && z.capture >= 1 && z.owner !== 'alpha') {
-        const prev = z.owner;
-        z.owner = 'alpha';
-        z.capture = 1;
-        onZoneCaptured(z, 'alpha', prev);
-      } else if (dir < 0 && z.capture <= -1 && z.owner !== 'bravo') {
-        const prev = z.owner;
-        z.owner = 'bravo';
-        z.capture = -1;
-        onZoneCaptured(z, 'bravo', prev);
-      }
-    } else if (z.capture > -1 && z.capture < 1) {
-      // 无人 → 缓慢回退（已归属且满进度则保持不变）
-      const decay = baseRate * 0.35 * dt;
-      if (z.capture > 0) z.capture = Math.max(0, z.capture - decay);
-      else if (z.capture < 0) z.capture = Math.min(0, z.capture + decay);
-    }
-  }
-}
-function updateScores(dt) {
-  if (match.phase !== 'playing') return;
-  for (const z of zoneRuntime) {
-    if (z.owner === 'alpha') scores.alpha += ZONE_SCORE_RATE * dt;
-    else if (z.owner === 'bravo') scores.bravo += ZONE_SCORE_RATE * dt;
-  }
-}
-function matchSummary() {
-  return {
-    mode: match.mode,
-    phase: match.phase,
-    countdown: Math.max(0, Math.ceil(match.countdown)),
-    timeLeft: Math.max(0, Math.ceil(match.timeLeft)),
-    target: match.target,
-    winner: match.winner,
-    round: match.round,
-    scores: { alpha: Math.round(scores.alpha * 10) / 10, bravo: Math.round(scores.bravo * 10) / 10 },
-  };
-}
-function endMatch(winner, reason) {
-  if (match.phase === 'ended') return;
-  match.phase = 'ended';
-  match.endedAt = Date.now();
-  match.winner = winner;
-  match.timeLeft = Math.max(0, match.timeLeft);
-  broadcast({
-    t: 'match_end',
-    winner,
-    reason,
-    scores: { alpha: Math.round(scores.alpha * 10) / 10, bravo: Math.round(scores.bravo * 10) / 10 },
-    roundScores: { ...bomb.roundScores },
-    target: match.target,
-    timeLeft: Math.max(0, Math.ceil(match.timeLeft)),
-    match: matchSummary(),
-  });
-  eventBus.emit('match_end', { winner, reason });
-  if (isMain) console.log('[match] 结束：' + (winner || '平局') + '（' + reason + '）');
-}
-function resetMatch() {
-  match.phase = 'waiting';
-  match.countdown = 0;
-  match.timeLeft = MATCH_TIME_LIMIT;
-  match.winner = null;
-  match.endedAt = 0;
-  match.round += 1;
-  scores.alpha = 0;
-  scores.bravo = 0;
-  uav.alpha = 0;
-  uav.bravo = 0;
-  killfeed.length = 0;
-  bomb.roundScores.alpha = 0;
-  bomb.roundScores.bravo = 0;
-  for (const z of zoneRuntime) {
-    z.owner = null;
-    z.capture = 0;
-    z.contested = false;
-    z.counts.alpha = 0;
-    z.counts.bravo = 0;
-  }
-  if (isMain) console.log('[match] 第 ' + match.round + ' 局准备：等待真人按空格开始');
-}
-
-// ============================================================
-// 拆弹模式：回合流程
-// ============================================================
-
-/** 找一个包点（ZONES 里的 A/B） */
-function bombSiteById(id) {
-  return zoneRuntime.find((z) => z.id === id) || zoneRuntime[0];
-}
-function bombSiteList() {
-  return (BOMB_CFG.sites || ['A', 'B'])
-    .map((id) => bombSiteById(id))
-    .filter(Boolean);
-}
-
-/** 重置炸弹状态 */
-function resetBomb() {
-  bomb.state = 'idle';
-  bomb.carrierId = null;
-  bomb.site = null;
-  bomb.x = 0; bomb.y = 0; bomb.z = 0;
-  bomb.plantedAt = 0;
-  bomb.fuseAt = 0;
-  bomb.defuseUntil = 0;
-  bomb.defuseById = null;
-  bomb.plantUntil = 0;
-  bomb.plantById = null;
-  bomb.roundEndReason = null;
-}
-
-/** 把一个玩家送回出生点并复活（回合开始时用） */
-function respawnForRound(p) {
-  if (p.bot) {
-    // AI 直接复用 respawn 逻辑
-    p.alive = true;
-    p.hp = p.maxHp ?? W.maxHp;
-    p.shield = RULES.shieldMax;
-    p.respawnAt = 0;
-    return;
-  }
-  respawn(p);
-}
-
-/** 回合开始：复活所有人、重置炸弹、发资金、开购买窗口 */
-function startRound(now = Date.now()) {
-  resetBomb();
-  for (const p of players.values()) respawnForRound(p);
-  // 进攻方随机一人携带炸弹
-  const attackers = [...players.values()].filter((p) => p.team === 'alpha');
-  if (attackers.length) {
-    const carrier = attackers[Math.floor(Math.random() * attackers.length)];
-    bomb.carrierId = carrier.id;
-    bomb.state = 'carried';
-  }
-  bomb.freezeUntil = now + BOMB_CFG.freezeTime * 1000;
-  bomb.buyUntil = now + BOMB_CFG.buyTime * 1000;
-  match.timeLeft = BOMB_CFG.roundTime;
-  match.phase = 'playing';
-  // 每回合发基础资金
-  for (const p of players.values()) {
-    if (creditsOf(p) < BOMB_CFG.lossCredits) addCredits(p, BOMB_CFG.lossCredits);
-  }
-  broadcast({
-    t: 'round_start',
-    round: match.round,
-    roundScores: { ...bomb.roundScores },
-    freezeUntil: bomb.freezeUntil,
-    buyUntil: bomb.buyUntil,
-    bombCarrierId: bomb.carrierId,
-    timeLeft: Math.ceil(match.timeLeft),
-  });
-  if (isMain) console.log('[bomb] 回合 ' + match.round + ' 开始，炸弹携带者 ' + (bomb.carrierId || '无'));
-}
-
-/** 回合结束：结算胜负、发奖金、进入下一回合 */
-function endRound(winner, reason) {
-  if (match.phase === 'ended') return;
-  bomb.roundEndReason = reason;
-  if (winner === 'alpha') bomb.roundScores.alpha += 1;
-  else if (winner === 'bravo') bomb.roundScores.bravo += 1;
-  // 资金结算
-  for (const p of players.values()) {
-    const won = p.team === winner;
-    addCredits(p, won ? BOMB_CFG.winCredits : BOMB_CFG.lossCredits);
-  }
-  broadcast({
-    t: 'round_end',
-    winner,
-    reason,
-    round: match.round,
-    roundScores: { ...bomb.roundScores },
-    scores: { ...bomb.roundScores },
-  });
-  if (isMain) console.log('[bomb] 回合结束：' + (winner || '平') + '（' + reason + '） 比分 ' +
-    bomb.roundScores.alpha + ':' + bomb.roundScores.bravo);
-  // 判定整场胜负
-  if (bomb.roundScores.alpha >= BOMB_CFG.roundsToWin) { endMatch('alpha', 'rounds'); return; }
-  if (bomb.roundScores.bravo >= BOMB_CFG.roundsToWin) { endMatch('bravo', 'rounds'); return; }
-  // 下一回合（延迟 4 秒）
-  match.round += 1;
-  match.phase = 'round_end';
-  setTimeout(() => {
-    if (match.phase === 'round_end') startRound(Date.now());
-  }, 4000);
-}
-
-/** 玩家死亡时：如果是携带者，炸弹掉落在原地 */
-function onBombCarrierDied(p) {
-  if (bomb.state === 'carried' && bomb.carrierId === p.id) {
-    bomb.state = 'dropped';
-    bomb.x = p.x; bomb.z = p.z; bomb.y = heightAt(p.x, p.z);
-    broadcast({ t: 'bomb_dropped', x: round3(bomb.x), y: round3(bomb.y), z: round3(bomb.z) });
-    if (isMain) console.log('[bomb] 携带者阵亡，炸弹掉落在 ' + round3(bomb.x) + ',' + round3(bomb.z));
-  }
-}
-
-/** 处理安放（按住 E 或自动，由客户端发 bomb_plant） */
-function tryPlantBomb(p, now) {
-  if (match.mode !== 'bomb' || match.phase !== 'playing') return false;
-  if (bomb.state !== 'carried' || bomb.carrierId !== p.id) return false;
-  if (!p.alive) return false;
-  if (now < bomb.freezeUntil) return false;
-  // 必须在包点半径内
-  const sites = bombSiteList();
-  const site = sites.find((s) => Math.hypot(p.x - s.x, p.z - s.z) <= BOMB_CFG.plantRadius);
-  if (!site) {
-    send(p.ws, { t: 'bomb_plant_fail', reason: 'not_in_site' });
-    return false;
-  }
-  bomb.site = site.id;
-  bomb.x = p.x; bomb.z = p.z; bomb.y = heightAt(p.x, p.z);
-  bomb.plantById = p.id;
-  bomb.plantUntil = now + BOMB_CFG.plantTime * 1000;
-  broadcast({ t: 'bomb_planting', byId: p.id, byName: p.name, site: site.id, until: bomb.plantUntil });
-  return true;
-}
-
-/** 完成安放 */
-function finishPlant(now) {
-  bomb.state = 'planted';
-  bomb.plantedAt = now;
-  bomb.fuseAt = now + BOMB_CFG.fuseTime * 1000;
-  bomb.plantUntil = 0;
-  const planter = players.get(bomb.plantById);
-  if (planter) addCredits(planter, BOMB_CFG.plantCredits);
-  // 安放后回合时间改为炸弹倒计时
-  match.timeLeft = BOMB_CFG.fuseTime;
-  broadcast({
-    t: 'bomb_planted',
-    site: bomb.site, x: round3(bomb.x), y: round3(bomb.y), z: round3(bomb.z),
-    fuseAt: bomb.fuseAt, byId: bomb.plantById,
-    timeLeft: BOMB_CFG.fuseTime,
-  });
-  if (isMain) console.log('[bomb] 炸弹已在 ' + bomb.site + ' 点安放，' + BOMB_CFG.fuseTime + 's 后引爆');
-}
-
-/** 开始拆除 */
-function tryDefuseBomb(p, now) {
-  if (match.mode !== 'bomb' || match.phase !== 'playing') return false;
-  if (bomb.state !== 'planted' || !p.alive) return false;
-  if (p.team !== 'bravo') return false;      // 只有防守方能拆
-  const d = Math.hypot(p.x - bomb.x, p.z - bomb.z);
-  if (d > BOMB_CFG.defuseRadius) {
-    send(p.ws, { t: 'bomb_defuse_fail', reason: 'too_far' });
-    return false;
-  }
-  const dur = (p.hasDefuseKit ? BOMB_CFG.defuseTimeKit : BOMB_CFG.defuseTime) * 1000;
-  bomb.defuseById = p.id;
-  bomb.defuseUntil = now + dur;
-  broadcast({ t: 'bomb_defusing', byId: p.id, byName: p.name, until: bomb.defuseUntil, duration: dur });
-  return true;
-}
-
-/** 完成拆除 */
-function finishDefuse(now) {
-  bomb.state = 'defused';
-  bomb.defuseUntil = 0;
-  const defuser = players.get(bomb.defuseById);
-  if (defuser) addCredits(defuser, BOMB_CFG.defuseCredits);
-  broadcast({ t: 'bomb_defused', byId: bomb.defuseById, byName: defuser ? defuser.name : '' });
-  if (isMain) console.log('[bomb] 炸弹已拆除');
-  endRound('bravo', 'defused');
-}
-
-/** 炸弹爆炸 */
-function explodeBomb(now) {
-  bomb.state = 'exploded';
-  broadcast({ t: 'bomb_exploded', x: round3(bomb.x), y: round3(bomb.y), z: round3(bomb.z), site: bomb.site });
-  if (isMain) console.log('[bomb] 炸弹爆炸');
-  // 爆炸范围内的人直接死亡
-  for (const p of players.values()) {
-    if (!p.alive) continue;
-    const d = Math.hypot(p.x - bomb.x, p.z - bomb.z);
-    if (d <= 16) {
-      p.hp = 0;
-      p.alive = false;
-      p.deaths = (p.deaths || 0) + 1;
-      p.respawnAt = now + 999999;   // 回合结束前不重生
-      broadcast({ t: 'death', victimId: p.id, victimName: p.name, killerId: null, weapon: 'bomb', headshot: false, killfeed: null });
-    }
-  }
-  endRound('alpha', 'exploded');
-}
-
-/** 每 tick 推进拆弹状态 */
-function updateBomb(dt, now) {
-  if (match.mode !== 'bomb') return;
-  if (match.phase !== 'playing') return;
-
-  // 安放进行中
-  if (bomb.state === 'carried' && bomb.plantUntil > 0) {
-    const planter = players.get(bomb.plantById);
-    // 安放者死亡或离开点位则中断
-    if (!planter || !planter.alive) {
-      bomb.plantUntil = 0; bomb.plantById = null;
-      broadcast({ t: 'bomb_plant_cancel', reason: 'died' });
-    } else if (now >= bomb.plantUntil) {
-      finishPlant(now);
-    }
-  }
-
-  // 已安放：检查拆除与引爆
-  if (bomb.state === 'planted') {
-    // 拆除中：拆除者必须活着且在范围内
-    if (bomb.defuseUntil > 0) {
-      const defuser = players.get(bomb.defuseById);
-      const stillThere = defuser && defuser.alive &&
-        Math.hypot(defuser.x - bomb.x, defuser.z - bomb.z) <= BOMB_CFG.defuseRadius + 0.6;
-      if (!stillThere) {
-        bomb.defuseUntil = 0; bomb.defuseById = null;
-        broadcast({ t: 'bomb_defuse_cancel' });
-      } else if (now >= bomb.defuseUntil) {
-        finishDefuse(now);
-        return;
-      }
-    }
-    // 倒计时结束 → 爆炸
-    if (now >= bomb.fuseAt) { explodeBomb(now); return; }
-    // 同步剩余时间
-    match.timeLeft = Math.max(0, (bomb.fuseAt - now) / 1000);
-    return;
-  }
-
-  // 未安放：回合倒计时
-  if (bomb.state !== 'planted' && bomb.state !== 'exploded' && bomb.state !== 'defused') {
-    match.timeLeft -= dt;
-    if (match.timeLeft <= 0) {
-      match.timeLeft = 0;
-      endRound('bravo', 'time');   // 时间到未安放 → 防守方胜
-    }
-  }
-}
-
-// 真人按空格 → 进入 3 秒倒计时
+// 真人按空格 → 进入 DM.countdown 秒倒计时
 function requestMatchStart() {
   if (match.phase !== 'waiting') return false;
   if (humanCount() <= 0) return false;
   match.phase = 'countdown';
-  match.countdown = RULES.matchCountdown;
-  broadcast({ t: 'match_countdown', seconds: RULES.matchCountdown, round: match.round });
-  if (isMain) console.log('[match] 玩家开始准备，倒计时 ' + RULES.matchCountdown + 's');
+  match.countdown = DM.countdown ?? 3;
+  broadcast({
+    t: 'match_countdown',
+    seconds: DM.countdown ?? 3,
+    round: match.round,
+    mode: match.mode,
+  });
+  if (isMain) console.log('[match] 玩家开始准备，倒计时 ' + (DM.countdown ?? 3) + 's');
+  return true;
+}
+// startMatch 是 requestMatchStart 的别名（契约建议的新导出名）
+const startMatch = requestMatchStart;
+
+// 倒计时结束 / 调试跳过后：正式开赛
+function beginPlaying(now = Date.now()) {
+  match.phase = 'playing';
+  match.countdown = 0;
+  match.timeLeft = DM.timeLimit;
+  match.winner = null;
+  match.standings = [];
+  broadcast({
+    t: 'match_start',
+    round: match.round,
+    mode: match.mode,
+    timeLeft: Math.ceil(match.timeLeft),
+    killTarget: match.killTarget,
+    scores: { ...scores },
+  });
+  if (isMain) {
+    console.log('[match] 第 ' + match.round + ' 局开始：死亡竞赛 ' + SQUAD_IDS.join('/') +
+      '，限时 ' + DM.timeLimit + 's' + (match.killTarget > 0 ? '，先到 ' + match.killTarget + ' 击杀' : ''));
+  }
+}
+// 调试/测试用：跳过等待与倒计时直接开赛
+function forceMatchStart() {
+  if (match.phase === 'playing') return true;
+  beginPlaying(Date.now());
   return true;
 }
 
-// 调试/测试用：跳过等待与倒计时直接开赛
-function forceMatchStart() {
-  match.phase = 'playing';
-  match.countdown = 0;
-  match.timeLeft = MATCH_TIME_LIMIT;
-  match.winner = null;
-  match.endedAt = 0;
-  if (match.mode === 'bomb') startRound(Date.now());
+// 结算：按小队击杀数排名，冠军写入 match.winner（全 0 击杀视为平局 → null）
+function endMatch(reason = 'time') {
+  if (match.phase === 'ended') return false;
+  const rows = standings();
+  const top = rows[0];
+  const winner = top && top.kills > 0 ? top.id : null;
+  match.phase = 'ended';
+  match.endedAt = Date.now();
+  match.winner = winner;
+  match.standings = rows;
+  match.timeLeft = Math.max(0, match.timeLeft);
+  const sc = {};
+  for (const id of SQUAD_IDS) sc[id] = scores[id] || 0;
+  broadcast({
+    t: 'match_end',
+    winner,
+    winnerName: winner ? squadMeta(winner).name : '',
+    winnerColor: winner ? squadMeta(winner).color : null,
+    reason,
+    standings: rows,
+    scores: sc,
+    timeLeft: Math.max(0, Math.ceil(match.timeLeft)),
+    killTarget: match.killTarget,
+    match: matchSnapshot(),
+  });
+  eventBus.emit('match_end', { winner, reason, standings: rows });
+  if (isMain) {
+    const board = rows.map((r) => r.tag + ':' + r.kills).join(' ');
+    console.log('[match] 结束（' + reason + '）：' + (winner ? squadMeta(winner).name : '平局') + '  ' + board);
+  }
   return true;
+}
+
+// 重置到下一局：清空比分/击杀信息/UAV，复活所有人，回到等待阶段
+function resetMatch() {
+  match.phase = 'waiting';
+  match.countdown = 0;
+  match.timeLeft = DM.timeLimit;
+  match.winner = null;
+  match.standings = [];
+  match.endedAt = 0;
+  match.round += 1;
+  for (const id of SQUAD_IDS) scores[id] = 0;
+  for (const id of SQUAD_IDS) uav[id] = 0;
+  killfeed.length = 0;
+  for (const p of players.values()) {
+    p.kills = 0;
+    p.deaths = 0;
+    p.streak = 0;
+    if (!p.alive) {
+      p.respawnAt = 0;
+      respawn(p);
+    }
+  }
+  if (isMain) console.log('[match] 第 ' + match.round + ' 局准备：等待真人按空格开始');
 }
 
 function updateMatch(dt, now) {
-  if (match.phase === 'waiting') {
-    // 等待真人按空格，计时/比分/据点全部冻结
-    return;
-  }
+  if (match.phase === 'waiting') return;      // 等待真人按空格，计时/比分冻结
   if (match.phase === 'countdown') {
     match.countdown = Math.max(0, match.countdown - dt);
-    if (match.countdown <= 0) {
-      match.countdown = 0;
-      broadcast({ t: 'match_start', round: match.round });
-      if (match.mode === 'bomb') {
-        startRound(now);
-      } else {
-        match.phase = 'playing';
-        match.timeLeft = MATCH_TIME_LIMIT;
-      }
-      if (isMain) console.log('[match] 第 ' + match.round + ' 局正式开始');
-    }
+    if (match.countdown <= 0) beginPlaying(now);
     return;
   }
   if (match.phase === 'ended') {
-    if (now - (match.endedAt || 0) >= RULES.matchResetDelay * 1000) resetMatch();
+    if (now - (match.endedAt || 0) >= (DM.resetDelay ?? 8) * 1000) resetMatch();
     return;
   }
-  if (match.phase === 'round_end') return;
-
-  // 拆弹模式走独立流程
-  if (match.mode === 'bomb') {
-    updateBomb(dt, now);
-    return;
-  }
-
+  // playing：限时倒计时 + 先到击杀目标
   match.timeLeft -= dt;
-  // 先到 MATCH_SCORE_TARGET
-  if (scores.alpha >= match.target) { endMatch('alpha', 'score'); return; }
-  if (scores.bravo >= match.target) { endMatch('bravo', 'score'); return; }
-  // 时间到：分高者胜，平局 winner=null
+  if (match.killTarget > 0) {
+    const leader = leadingSquad();
+    if (leader && (scores[leader] || 0) >= match.killTarget) { endMatch('killtarget'); return; }
+  }
   if (match.timeLeft <= 0) {
     match.timeLeft = 0;
-    const winner = scores.alpha === scores.bravo ? null : (scores.alpha > scores.bravo ? 'alpha' : 'bravo');
-    endMatch(winner, 'time');
+    endMatch('time');
   }
 }
 
 // ============================================================
-// 十二、AI：创建 / 决策循环 / 兜底
+// 十三、AI：创建 / 角色编成 / 决策循环 / 兜底
 // ============================================================
 
-function normalizeTeam(teamArg) {
-  const t = String(teamArg || '').toLowerCase();
-  if (t === 'alpha' || t === 'ally' || t === 'blue' || t === 'friend' || t === '友军') return 'alpha';
-  if (t === 'bravo' || t === 'enemy' || t === 'red' || t === '敌军') return 'bravo';
-  return 'bravo';
+// 小队名归一化（支持旧名 ally/enemy 与中文）
+function normalizeSquad(arg) {
+  const t = String(arg || '').toLowerCase();
+  if (SQUAD_BY_ID.has(t)) return t;
+  if (t === 'ally' || t === 'blue' || t === 'friend' || t === '友军') return SQUAD_IDS[0];
+  if (t === 'enemy' || t === 'red' || t === '敌军') return SQUAD_IDS[1] || SQUAD_IDS[0];
+  return SQUAD_IDS[Math.floor(Math.random() * SQUAD_IDS.length)] || SQUAD_IDS[0];
 }
+
 // 可否看见目标：距离 + 视锥（共享 AI_CONFIG）+ 共享 LOS（头/胸两点）
 function canSee(bot, q) {
   if (!bot || !q || !bot.alive || !q.alive) return false;
-  if (bot.team === q.team) return false;
+  if (squadIdOf(bot) === squadIdOf(q)) return false;
   const eyeX = bot.x, eyeY = bot.y + eyeHeightFor(bot), eyeZ = bot.z;
   const dx = q.x - eyeX, dz = q.z - eyeZ;
   const dist2d = Math.hypot(dx, dz);
@@ -2008,25 +1779,27 @@ const AI_ROLES = {
 };
 const AI_ROLE_ORDER = ['assault', 'support', 'marksman', 'scout'];
 // 每队已分配的角色计数（保证一队里角色尽量不重复）
-const teamRoleCursor = { alpha: 0, bravo: 0 };
-
-// 特殊武器限制：霰弹枪与狙击枪在【同一队伍】里合计最多 1 把（二选一）。
-// 每队记录已占用的特殊武器；若 scout 拿到霰弹枪，则该队不能再有狙击枪，反之亦然。
+const squadRoleCursor = {};
+// 特殊武器限制：霰弹枪与狙击枪在【同一小队】里合计最多 1 把（二选一）。
 const SPECIAL_WEAPONS = new Set(['shotgun', 'sniper']);
-const teamSpecialUsed = { alpha: null, bravo: null };
-
-/** 统计某队当前已持有的特殊武器（霰弹/狙击） */
-function teamSpecialWeapon(team) {
-  for (const p of players.values()) {
-    if (p.team !== team || !p.bot) continue;
-    if (SPECIAL_WEAPONS.has(p.weapon)) return p.weapon;
-  }
-  return teamSpecialUsed[team] || null;
+const squadSpecialUsed = {};
+for (const id of SQUAD_IDS) {
+  squadRoleCursor[id] = 0;
+  squadSpecialUsed[id] = null;
 }
 
-function nextRoleFor(team) {
-  const cur = teamRoleCursor[team] || 0;
-  teamRoleCursor[team] = (cur + 1) % AI_ROLE_ORDER.length;
+/** 统计某小队当前已持有的特殊武器（霰弹/狙击） */
+function squadSpecialWeapon(squad) {
+  for (const p of players.values()) {
+    if (squadIdOf(p) !== squad || !p.bot) continue;
+    if (SPECIAL_WEAPONS.has(p.weapon)) return p.weapon;
+  }
+  return squadSpecialUsed[squad] || null;
+}
+
+function nextRoleFor(squad) {
+  const cur = squadRoleCursor[squad] || 0;
+  squadRoleCursor[squad] = (cur + 1) % AI_ROLE_ORDER.length;
   return AI_ROLE_ORDER[cur % AI_ROLE_ORDER.length];
 }
 
@@ -2035,26 +1808,25 @@ function nextRoleFor(team) {
  * - scout 想用霰弹枪，但该队已有狙击枪 → 改用 smg
  * - marksman 想用狙击枪（如果有），但该队已有霰弹枪 → 改用 ak47
  */
-function resolveBotWeapon(team, roleCfg) {
+function resolveBotWeapon(squad, roleCfg) {
   const wanted = roleCfg.weapon;
   if (!SPECIAL_WEAPONS.has(wanted)) return wanted;
-  const used = teamSpecialWeapon(team);
+  const used = squadSpecialWeapon(squad);
   if (used && used !== wanted) {
-    // 已被另一种特殊武器占用 → 退化为通用武器
     return roleCfg.fallbackWeapon || (wanted === 'shotgun' ? 'smg' : 'ak47');
   }
-  teamSpecialUsed[team] = wanted;
+  squadSpecialUsed[squad] = wanted;
   return wanted;
 }
 
-// 创建 AI（默认敌军；team 支持 alpha/bravo 与旧名 ally/enemy）
-function createBot(teamArg, roleArg) {
-  const team = normalizeTeam(teamArg);
-  const spawn = freeSpawn(team);
-  const role = AI_ROLES[roleArg] ? roleArg : nextRoleFor(team);
+// 创建 AI（squadArg 支持小队 id 与旧名 ally/enemy）
+function createBot(squadArg, roleArg) {
+  const squad = normalizeSquad(squadArg);
+  const spawn = freeSpawn(squad);
+  const role = AI_ROLES[roleArg] ? roleArg : nextRoleFor(squad);
   const roleCfg = AI_ROLES[role] || AI_ROLES.assault;
   // 实际武器：应用"霰弹枪/狙击枪同队二选一"限制
-  const primary = resolveBotWeapon(team, roleCfg);
+  const primary = resolveBotWeapon(squad, roleCfg);
   const owned = { pistol: true };
   const ammo = {};
   // 主武器 + 副武器（altWeapon，例如精确射手的沙漠之鹰）
@@ -2067,14 +1839,18 @@ function createBot(teamArg, roleArg) {
     ammo[id] = fullAmmo(id);
     ammo[id].reserve = Infinity;
   }
-  const color = team === 'alpha' ? (BOT_COLORS.ally ?? 0x6f9fc4) : (BOT_COLORS.enemy ?? 0xc06a4e);
+  const meta = squadMeta(squad);
+  const tagLetter = (meta.tag || meta.id || 'X').slice(0, 1);
+  const now = Date.now();
   const bot = {
     id: 'bot' + botSeq,
     ws: null,
     bot: true,
-    name: 'AI-' + (team === 'alpha' ? 'A' : 'B') + String(botSeq).padStart(2, '0'),
-    team,
-    color,
+    name: 'AI-' + tagLetter + String(botSeq).padStart(2, '0'),
+    // 小队：squad 主字段 + team 别名
+    squad,
+    team: squad,
+    color: meta.color,
     // 小队战术：角色 + 该角色的战斗参数（由 ai.js 读取）
     role,
     roleLabel: roleCfg.label,
@@ -2085,6 +1861,7 @@ function createBot(teamArg, roleArg) {
     hp: (W.maxHp ?? 100) * (AI_CONFIG.healthMult ?? 1),
     maxHp: (W.maxHp ?? 100) * (AI_CONFIG.healthMult ?? 1),
     alive: true, respawnAt: 0,
+    protectUntil: now + Math.round((DM.spawnProtect ?? 1.5) * 1000),
     shield: RULES.shieldMax, stamina: W.staminaMax, speedUntil: 0,
     stance: 'stand', sprinting: false, sliding: false, aiming: false,
     prevCrouch: false, slideUntil: 0, slideCdUntil: 0, slideDirX: 0, slideDirZ: 0,
@@ -2094,7 +1871,7 @@ function createBot(teamArg, roleArg) {
     reloadUntil: 0, swapUntil: 0, lastFire: 0, lastShotAt: 0, burst: 0,
     kills: 0, deaths: 0, streak: 0,
     input: emptyInput(),
-    lastInputAt: Date.now(),
+    lastInputAt: now,
     speedMult: AI_CONFIG.moveSpeedMult ?? 1,
     damageMult: AI_CONFIG.damageMult ?? 1,
     // AI 决策字段（由 server/ai.js 写入）
@@ -2131,7 +1908,7 @@ function createBot(teamArg, roleArg) {
   botSeq += 1;
   players.set(bot.id, bot);
   broadcast({ t: 'player_joined', player: snapshot(bot) });
-  if (isMain) console.log('[bot] ' + bot.name + '（' + team + '）加入，当前 AI ' + countBots() + ' 个');
+  if (isMain) console.log('[bot] ' + bot.name + '（' + squad + '/' + roleCfg.label + '）加入，当前 AI ' + countBots() + ' 个');
   return bot;
 }
 
@@ -2140,30 +1917,33 @@ function countBots() {
   for (const p of players.values()) if (p.bot) n += 1;
   return n;
 }
+function countBotsInSquad(squad) {
+  let n = 0;
+  for (const p of players.values()) if (p.bot && squadIdOf(p) === squad) n += 1;
+  return n;
+}
 
 // ============================================================
-// 后台命令：/add <数量|clear> <类型>
-//   /add 1 ai        → 增加 1 个 AI
+// 后台命令：/add <数量|clear> <类型> [小队]
+//   /add 1 ai        → 增加 1 个 AI（随机/人少的小队）
 //   /add -1 ai       → 减少 1 个 AI
-//   /add 3 ai        → 增加 3 个 AI
 //   /add clear ai    → 清空所有 AI
-//   可选阵营：/add 1 ai alpha（友军）  /add 1 ai bravo（敌军，默认）
+//   可选小队：/add 1 ai alpha
 // ============================================================
 function removeBot(bot) {
   if (!bot) return false;
   players.delete(bot.id);
-  broadcast({ t: 'player_left', id: bot.id, name: bot.name, team: bot.team });
+  broadcast({ t: 'player_left', id: bot.id, name: bot.name, squad: bot.squad, team: bot.squad });
   if (isMain) console.log('[-] ' + bot.name + ' 移除，当前 AI ' + countBots() + ' 个');
   return true;
 }
-
-// 移除最后加入的 AI（优先指定阵营）
-function removeLastBot(teamArg) {
-  const team = teamArg ? normalizeTeam(teamArg) : null;
+// 移除最后加入的 AI（优先指定小队）
+function removeLastBot(squadArg) {
+  const squad = squadArg ? normalizeSquad(squadArg) : null;
   let victim = null;
   for (const p of players.values()) {
     if (!p.bot) continue;
-    if (team && p.team !== team) continue;
+    if (squad && squadIdOf(p) !== squad) continue;
     victim = p;   // players 是插入顺序 Map，最后命中的就是最新加入的
   }
   return victim ? removeBot(victim) : false;
@@ -2231,7 +2011,7 @@ function cmdEnv(mode, byName) {
   };
 }
 
-function cmdAddBot(countArg, kindArg, teamArg) {
+function cmdAddBot(countArg, kindArg, squadArg) {
   const kind = String(kindArg || '').toLowerCase();
   if (kind && kind !== 'ai' && kind !== 'bot') {
     return { ok: false, msg: '未知类型 "' + kindArg + '"（目前支持 ai）' };
@@ -2251,8 +2031,9 @@ function cmdAddBot(countArg, kindArg, teamArg) {
     const add = Math.min(20, Math.floor(n));
     let added = 0;
     for (let i = 0; i < add; i++) {
-      if (countBots() >= (AI_CONFIG.max ?? 5) * 4) break;   // 安全上限，避免刷爆
-      createBot(teamArg || 'bravo');
+      if (players.size >= (DM.maxPlayers ?? 16)) break;   // 总人数上限
+      if (countBots() >= (AI_CONFIG.max ?? 12) + 4) break; // 安全上限，避免刷爆
+      createBot(squadArg || null);
       added += 1;
     }
     return { ok: true, action: 'add', added, bots: countBots(), msg: '已新增 ' + added + ' 个 AI（当前 ' + countBots() + ' 个）' };
@@ -2261,7 +2042,7 @@ function cmdAddBot(countArg, kindArg, teamArg) {
   let want = Math.min(20, Math.floor(-n));
   let removed = 0;
   while (want > 0) {
-    if (!removeLastBot(teamArg)) break;
+    if (!removeLastBot(squadArg)) break;
     removed += 1;
     want -= 1;
   }
@@ -2271,14 +2052,16 @@ function cmdAddBot(countArg, kindArg, teamArg) {
   };
 }
 
-// 兜底 AI：server/ai.js 未就绪或抛错时保证对局仍然可玩（占点 + 看见敌人开火）
+// 兜底 AI：server/ai.js 未就绪或抛错时保证对局仍然可玩（死亡竞赛：找人打 / 巡逻，不占点）
 function fallbackAi(bot, now) {
   if (!bot.alive) return;
+  const mySquad = squadIdOf(bot);
   // 找最近的可见敌人
   let target = null;
   let bestD = Infinity;
   for (const q of players.values()) {
-    if (q === bot || q.team === bot.team || !q.alive) continue;
+    if (q === bot || !q.alive) continue;
+    if (squadIdOf(q) === mySquad) continue;
     if (!canSee(bot, q)) continue;
     const d = Math.hypot(q.x - bot.x, q.z - bot.z);
     if (d < bestD) { bestD = d; target = q; }
@@ -2315,20 +2098,22 @@ function fallbackAi(bot, now) {
     bot.wantFire = false;
     return;
   }
-  // 没敌人：去争夺/防守据点
-  let objective = null;
-  for (const z of zoneRuntime) {
-    if (z.owner !== bot.team) { objective = z; break; }
+  // 没敌人：朝最近的敌方玩家方向推进（死亡竞赛没有据点，直接用"找人"代替"占点"）
+  let nearest = null, nd = Infinity;
+  for (const q of players.values()) {
+    if (q === bot || !q.alive || squadIdOf(q) === mySquad) continue;
+    const d = Math.hypot(q.x - bot.x, q.z - bot.z);
+    if (d < nd) { nd = d; nearest = q; }
   }
-  if (!objective) objective = zoneRuntime.find((z) => Math.hypot(z.x - bot.x, z.z - bot.z) < 8) || zoneRuntime[0];
   bot.aiming = false;
   bot.pitch = clampNum(bot.pitch * 0.9, -0.3, 0.3);
-  const dx = objective.x - bot.x, dz = objective.z - bot.z;
-  const d = Math.hypot(dx, dz);
-  if (d > Math.max(2.5, objective.r * 0.5)) {
-    const yaw = Math.atan2(-dx, -dz);
+  if (nearest) {
+    const yaw = Math.atan2(-(nearest.x - bot.x), -(nearest.z - bot.z));
     bot.yaw = wrapAngle(bot.yaw + clampNum(wrapAngle(yaw - bot.yaw), -0.3, 0.3));
-    bot.input = { mx: 0, mz: 1, jump: false, sprint: d > 18 && (bot.stamina ?? 0) > 20, crouch: false, aim: false };
+    bot.input = {
+      mx: 0, mz: 1, jump: false,
+      sprint: nd > 18 && (bot.stamina ?? 0) > 20, crouch: false, aim: false,
+    };
   } else {
     bot.input = { mx: 0, mz: 0, jump: false, sprint: false, crouch: true, aim: false };
     bot.yaw = wrapAngle(bot.yaw + 0.02);
@@ -2402,9 +2187,8 @@ function aiUpdate(bot, now = Date.now(), ctxArg) {
   processBotFire(bot, now);
 }
 
-// AI 决策循环：每 200ms 一次（spec §6.7）
+// AI 决策循环：每 200ms 一次
 const AI_SLICE = 4;              // 重决策（think）分摊到 4 个子帧，避免所有 AI 同帧思考造成尖峰
-const AI_PER_FRAME_BUDGET = 4;   // 单帧最多跑 4 个 AI 的重决策
 let aiFrameSeq = 0;
 function hashSlice(id) {
   const s = String(id || '');
@@ -2414,13 +2198,13 @@ function hashSlice(id) {
 }
 
 function runAiTick(now = Date.now()) {
-  // 只把“上一批”脚步声交给本 tick 的 AI（ctx.events 会在每个 bot 上被处理一次）
+  // 只把"上一批"脚步声交给本 tick 的 AI（ctx.events 会在每个 bot 上被处理一次）
   const batch = aiNoiseEvents;
   aiNoiseEvents = [];
   const ctx = buildAiCtx(now, batch);
   const frame = (aiFrameSeq = (aiFrameSeq + 1) % AI_SLICE);
   // 注意：感知(sense)与开火(tryFire)必须每个 tick 都跑，否则 AI 无法连发；
-  // 只有开销大的“重决策”(think：A* 寻路/选点/选掩体) 才按子帧分摊。
+  // 只有开销大的"重决策"(think：A* 寻路/选点/选掩体) 才按子帧分摊。
   for (const bot of players.values()) {
     if (!bot.bot) continue;
     bot.lastInputAt = now;
@@ -2432,7 +2216,7 @@ function runAiTick(now = Date.now()) {
 }
 
 // ============================================================
-// 十三、主循环：20Hz 推进 + 状态广播
+// 十四、主循环：20Hz 推进 + 状态广播
 // ============================================================
 
 function tick(now = Date.now(), dt = TICK_MS / 1000) {
@@ -2449,8 +2233,6 @@ function tick(now = Date.now(), dt = TICK_MS / 1000) {
   }
   for (const p of players.values()) updatePlayer(p, dt);
   separatePlayers();
-  updateZones(dt);
-  updateScores(dt);
   updateMatch(dt, now);
   updateItemRespawns(now);
   updatePickups(now);
@@ -2462,7 +2244,7 @@ function stepOnce(dt = TICK_MS / 1000) {
 }
 
 // ============================================================
-// 十四、HTTP 静态托管 + WebSocket 协议
+// 十五、HTTP 静态托管 + WebSocket 协议
 // ============================================================
 
 function staticHandler(req, res) {
@@ -2473,7 +2255,7 @@ function staticHandler(req, res) {
   }
   if (!fs.existsSync(DIST)) {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end('<h1>郊区战场 · 服务器运行中</h1><p>开发模式请执行 <b>npm run dev</b> 并访问 Vite 地址</p>');
+    res.end('<h1>' + MAP_META.name + ' · 死亡竞赛 · 服务器运行中</h1><p>开发模式请执行 <b>npm run dev</b> 并访问 Vite 地址</p>');
     return;
   }
   let urlPath = decodeURIComponent((req.url || '/').split('?')[0]);
@@ -2553,7 +2335,7 @@ function debugSetPos(msg) {
   const lim = (W.half ?? 70) - 3;
   p.x = clampNum(msg.x ?? p.x, -lim, lim);
   p.z = clampNum(msg.z ?? p.z, -lim, lim);
-  p.y = typeof msg.y === 'number' ? clampNum(msg.y, -5, 40) : heightAt(p.x, p.z);
+  p.y = typeof msg.y === 'number' ? clampNum(msg.y, -20, 120) : heightAt(p.x, p.z);
   p.vy = 0;
   p.grounded = true;
   p.stamina = W.staminaMax;
@@ -2570,65 +2352,44 @@ function debugSetHp(msg) {
   p.hp = clampNum(msg.hp, 0, p.maxHp ?? W.maxHp);
   if (p.hp <= 0) {
     p.alive = false;
-    p.respawnAt = Date.now() + Math.round((W.respawnTime ?? 3) * 1000);
+    p.respawnAt = Date.now() + Math.round((DM.respawnTime ?? 3) * 1000);
   }
 }
-function debugSetZone(msg) {
-  const id = String(msg.id || msg.zone || '').toUpperCase();
-  const z = zoneRuntime.find((q) => q.id.toUpperCase() === id);
-  if (!z) return;
-  const teamRaw = String(msg.team || '').toLowerCase();
-  if (!teamRaw || teamRaw === 'neutral' || teamRaw === 'none') {
-    z.owner = null;
-    z.capture = 0;
-  } else {
-    const team = normalizeTeam(teamRaw);
-    z.owner = team;
-    z.capture = team === 'alpha' ? 1 : -1;
-    onZoneCaptured(z, team, null);
-  }
+// 调试：直接给某个小队加分（测试计分/结算链路）
+function debugSetScore(msg) {
+  const squad = normalizeSquad(msg.squad || msg.team);
+  if (!SQUAD_BY_ID.has(squad)) return;
+  scores[squad] = Math.max(0, Number(msg.value ?? msg.kills) || 0);
+}
+// 调试：直接把某玩家传送到指定小队
+function debugSetSquad(msg) {
+  const p = findPlayerByMsg(msg);
+  if (!p) return;
+  const squad = normalizeSquad(msg.squad || msg.team);
+  p.squad = squad;
+  p.team = squad;
+  p.color = squadColorOf(squad);
 }
 function handleDebug(msg) {
   if (!DEBUG) return;
   switch (msg.t) {
     case 'debug_pos': debugSetPos(msg); break;
-    case 'debug_spawn_bot': createBot(msg.team || 'bravo'); break;
+    case 'debug_spawn_bot': createBot(msg.squad || msg.team || null); break;
     case 'debug_spawn_item': {
       const type = msg.type || 'medkit';
       if (typeof msg.x === 'number' && typeof msg.z === 'number') spawnItem(type, msg.x, msg.z);
       else spawnItem(type);
       break;
     }
-    case 'debug_zone': debugSetZone(msg); break;
     case 'debug_hp': debugSetHp(msg); break;
-    // 额外调试钩子（测试快速推进比赛用）
-    case 'debug_score': {
-      const team = normalizeTeam(msg.team);
-      if (team === 'alpha' || team === 'bravo') scores[team] = Math.max(0, Number(msg.value) || 0);
-      break;
-    }
-    // 调试：直接判某一方赢下本回合（拆弹模式测试用）
-    case 'debug_round_win': {
-      const team = normalizeTeam(msg.team);
-      if (match.mode === 'bomb' && match.phase === 'playing') endRound(team, 'debug');
-      break;
-    }
-    // 调试：直接把炸弹放到安放状态（跳过携带/安放流程）
-    case 'debug_plant': {
-      if (match.mode !== 'bomb' || match.phase !== 'playing') break;
-      const siteId = msg.site || 'A';
-      const site = bombSiteById(siteId);
-      if (!site) break;
-      bomb.state = 'carried';
-      bomb.carrierId = player ? player.id : null;
-      bomb.x = site.x; bomb.z = site.z; bomb.y = heightAt(site.x, site.z);
-      bomb.site = site.id;
-      bomb.plantById = player ? player.id : null;
-      finishPlant(now);
-      break;
-    }
+    case 'debug_squad': debugSetSquad(msg); break;
+    case 'debug_score': debugSetScore(msg); break;
     case 'debug_time': {
       match.timeLeft = Math.max(0, Number(msg.timeLeft ?? msg.value) || 0);
+      break;
+    }
+    case 'debug_end': {
+      endMatch(msg.reason || 'debug');
       break;
     }
     // 跳过等待/倒计时，直接开赛（仅测试）
@@ -2665,20 +2426,21 @@ wss.on('connection', (ws) => {
     switch (msg.t) {
       case 'join': {
         if (player) return;
-        if (humanCount() >= RULES.maxPlayers) {
-          send(ws, { t: 'error', msg: '服务器已满（最多 ' + RULES.maxPlayers + ' 名真人）' });
+        if (players.size >= RULES.maxPlayers) {
+          send(ws, { t: 'error', msg: '服务器已满（最多 ' + RULES.maxPlayers + ' 人，含 AI）' });
           ws.close();
           return;
         }
-        player = createPlayer(ws, msg.name);
+        player = createPlayer(ws, msg.name, msg.squad || msg.team);
         send(ws, welcomeMessage(player));
         broadcastExcept(ws, { t: 'player_joined', player: snapshot(player) });
         send(ws, stateMessage());
-        if (isMain) console.log('[+] ' + player.name + ' (' + player.id + ') 加入 alpha 队，当前真人 ' + humanCount());
+        if (isMain) console.log('[+] ' + player.name + ' (' + player.id + ') 加入 ' + player.squad + ' 队，当前真人 ' + humanCount());
         break;
       }
+      // 开始比赛：新协议是 start{}，旧客户端发 ready 也兼容
+      case 'start':
       case 'ready': {
-        // 真人玩家按下空格：等待阶段 → 3 秒倒计时
         requestMatchStart();
         break;
       }
@@ -2710,52 +2472,11 @@ wss.on('connection', (ws) => {
         if (player) switchWeapon(player, msg.weapon);
         break;
       }
-      // ===== 拆弹模式协议 =====
-      case 'buy': {
-        // 购买武器（回合开始购买窗口内）
-        if (!player) return;
-        if (match.mode !== 'bomb') { send(ws, { t: 'buy_result', ok: false, msg: '当前模式不支持购买' }); return; }
-        if (now > bomb.buyUntil) { send(ws, { t: 'buy_result', ok: false, msg: '购买时间已结束' }); return; }
-        const item = BUY_MENU.find((b) => b.id === msg.weapon);
-        if (!item) { send(ws, { t: 'buy_result', ok: false, msg: '未知武器' }); return; }
-        const have = creditsOf(player);
-        if (have < item.price) {
-          send(ws, { t: 'buy_result', ok: false, msg: '资金不足（需要 ' + item.price + '）', credits: have });
-          return;
-        }
-        credits.set(player.id, have - item.price);
-        grantWeapon(player, item.id);
-        send(ws, {
-          t: 'buy_result', ok: true, weapon: item.id, price: item.price,
-          credits: credits.get(player.id), msg: '已购买 ' + item.name,
-        });
-        if (isMain) console.log('[buy] ' + player.name + ' 购买 ' + item.id + '（剩 ' + credits.get(player.id) + '）');
-        break;
-      }
-      case 'bomb_plant': {
-        if (player) tryPlantBomb(player, now);
-        break;
-      }
-      case 'bomb_defuse': {
-        if (player) tryDefuseBomb(player, now);
-        break;
-      }
-      case 'bomb_pickup': {
-        // 捡起掉落的炸弹
-        if (!player || match.mode !== 'bomb') return;
-        if (bomb.state !== 'dropped') return;
-        if (player.team !== 'alpha' || !player.alive) return;
-        if (Math.hypot(player.x - bomb.x, player.z - bomb.z) > 2.2) return;
-        bomb.state = 'carried';
-        bomb.carrierId = player.id;
-        broadcast({ t: 'bomb_pickup', byId: player.id, byName: player.name });
-        break;
-      }
       case 'ping': {
         send(ws, { t: 'pong', time: msg.time, serverTime: now });
         break;
       }
-      // 后台命令：/add 1 ai、/add -1 ai、/add clear ai
+      // 后台命令：/add 1 ai、/add -1 ai、/add clear ai、/god、/dark、/light
       case 'command': {
         if (!player) return;
         const text = String(msg.text ?? msg.cmd ?? '').trim().replace(/^\//, '');
@@ -2786,7 +2507,7 @@ wss.on('connection', (ws) => {
   ws.on('close', () => {
     if (player) {
       players.delete(player.id);
-      broadcast({ t: 'player_left', id: player.id, name: player.name, team: player.team });
+      broadcast({ t: 'player_left', id: player.id, name: player.name, squad: player.squad, team: player.squad });
       if (isMain) console.log('[-] ' + player.name + ' (' + player.id + ') 离开，当前真人 ' + humanCount());
       player = null;
     }
@@ -2795,17 +2516,24 @@ wss.on('connection', (ws) => {
 });
 
 // ============================================================
-// 十五、启动（仅直接运行时；被测试 import 时只导出 API）
+// 十六、启动（仅直接运行时；被测试 import 时只导出 API）
 // ============================================================
 
+// 开局 AI：每支小队 DM.botsPerSquad 个（BOTS_PER_SQUAD 可覆盖），总量受 DM.maxPlayers 约束
 function spawnInitialBots() {
-  const total = Math.max(0, Math.min(16, Number(process.env.BOTS_MAX ?? AI_CONFIG.max ?? 5)));
-  if (total <= 0) return;
-  const alphaCount = total >= 2 ? Math.max(1, Math.round(total * 0.4)) : 0;
-  const bravoCount = total - alphaCount;
-  for (let i = 0; i < alphaCount; i++) createBot('alpha');
-  for (let i = 0; i < bravoCount; i++) createBot('bravo');
-  if (isMain) console.log('[bot] 启动 AI：alpha ' + alphaCount + ' / bravo ' + bravoCount + '（共 ' + countBots() + '）');
+  if (BOTS_PER_SQUAD <= 0) return;
+  let total = 0;
+  for (const squad of SQUAD_IDS) {
+    for (let i = 0; i < BOTS_PER_SQUAD; i++) {
+      if (players.size >= (DM.maxPlayers ?? 16)) break;
+      createBot(squad);
+      total += 1;
+    }
+  }
+  if (isMain) {
+    const per = SQUAD_IDS.map((s) => s + ' ' + countBotsInSquad(s)).join(' / ');
+    console.log('[bot] 启动 AI：' + per + '（共 ' + total + '，每队 ' + BOTS_PER_SQUAD + '）');
+  }
 }
 
 async function start() {
@@ -2813,13 +2541,10 @@ async function start() {
   ensureNav();
   initItems();
   server.listen(PORT, '0.0.0.0', () => {
-    console.log('[server] 郊区战场服务器已启动：' + PORT + '（HTTP + WebSocket /ws）');
-    if (match.mode === 'bomb') {
-      console.log('[server] 模式 拆弹（Search & Destroy）：' + (BOMB_CFG.sites || ['A', 'B']).join('/') +
-        ' 包点，先赢 ' + BOMB_CFG.roundsToWin + ' 回合；回合 ' + BOMB_CFG.roundTime + 's，炸弹 ' + BOMB_CFG.fuseTime + 's');
-    } else {
-      console.log('[server] 模式 Domination：' + ZONE_DEFS.map((z) => z.id).join('/') + '，先到 ' + MATCH_SCORE_TARGET + ' 分或 ' + MATCH_TIME_LIMIT + 's');
-    }
+    console.log('[server] ' + MAP_META.name + '（' + MAP_ID + '）服务器已启动：' + PORT + '（HTTP + WebSocket /ws）');
+    console.log('[server] 模式 死亡竞赛：' + SQUADS.map((s) => s.tag).join('/') +
+      '，限时 ' + DM.timeLimit + 's' + (match.killTarget > 0 ? '，先到 ' + match.killTarget + ' 击杀' : '') +
+      '，每队 AI ' + BOTS_PER_SQUAD);
   });
   spawnInitialBots();
 
@@ -2855,10 +2580,10 @@ if (isMain) {
 }
 
 // ============================================================
-// 十六、导出（spec §6.8 要求的旧名字全部保留，可新增）
+// 十七、导出（契约 §4.4 的旧名字全部保留，可新增）
 // ============================================================
 export {
-  // —— spec §6.8 必须保留 ——
+  // —— 契约 §4.4 必须保留 ——
   createPlayer,
   createBot,
   handleShoot,
@@ -2868,11 +2593,8 @@ export {
   aiUpdate,
   canSee,
   countBots,
-  cmdAddBot,
-  removeBot,
   spawnItem,
   applyItem,
-  initItems,
   items,
   players,
   startReload,
@@ -2881,32 +2603,43 @@ export {
   grantWeapon,
   ammoOf,
   makeLoadout,
-  // —— 新增（测试/集成便利）——
+  // —— 新增（契约建议：小队 / 计分 / 对局）——
+  scores,
+  match,
+  SQUADS,
+  SQUAD_IDS,
+  DM,
+  MAP_ID,
+  MAP_META,
+  startMatch,
+  endMatch,
+  assignSquad,
+  standings,
+  squadIdOf,
+  squadMeta,
+  // —— 调试 / 集成便利 ——
   tick,
   stepOnce,
   stateMessage,
+  welcomeMessage,
   requestMatchStart,
   forceMatchStart,
-  // 拆弹模式（测试/集成用）
-  bomb,
-  BOMB_CFG,
-  BUY_MENU,
-  creditsOf,
-  addCredits,
-  startRound,
-  endRound,
-  tryPlantBomb,
-  tryDefuseBomb,
-  resetBomb,
-  zoneRuntime as zones,
-  scores,
-  match,
+  resetMatch,
   uav,
   killfeed,
   eventBus,
   handleDebug,
   ensureNav,
   ensureAiModules,
+  initItems,
+  updateItemRespawns,
+  cmdAddBot,
+  cmdGod,
+  cmdEnv,
+  removeBot,
+  countBotsInSquad,
+  // 已废弃但保留空数组，避免旧脚本 import 时直接崩（死亡竞赛没有据点）
+  zones,
   raySphere,
   rayCapsule,
   rayHitWorld,
@@ -2917,6 +2650,8 @@ export {
   WEAPON_ORDER,
   PICKUP_WEAPONS,
   RULES,
+  BOTS_PER_SQUAD,
+  SQUAD_COUNT,
   server,
   wss,
 };

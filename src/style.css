@@ -1,8 +1,9 @@
-/* ===== 郊区战场 · SUBURBAN FRONT —— 写实军事 HUD 样式 =====
+/* ===== 潮汐湾 · TIDEWATER —— 写实军事 HUD 样式（死亡竞赛） =====
    低饱和橄榄 / 沙色 / 暗木色面板，细 1px 边框，等宽数字，无霓虹发光。
-   组织：1 变量与基础 · 2 菜单 · 3 HUD 框架 · 4 顶部信息 · 5 罗盘/比分/据点
+   玩法：限时死亡竞赛（4 支小队比人头），顶部为倒计时 + 4 队排名条。
+   组织：1 变量与基础 · 2 菜单 · 3 HUD 框架 · 4 顶部信息 · 5 罗盘/倒计时/小队排名
         6 小地图/击杀信息 · 7 生命体征 · 8 武器/弹药 · 9 准星与命中反馈
-        10 开镜遮罩 · 11 弹窗 · 12 世界名牌 · 13 响应式 */
+        10 开镜遮罩 · 11 弹窗 · 12 世界名牌 · 13 响应式 · 14 4 队配色与结算排名 */
 
 /* ---------- 1. 变量与基础 ---------- */
 :root {
@@ -33,6 +34,12 @@
   --sf-font: "Bahnschrift", "DIN Alternate", "Barlow Semi Condensed", "Segoe UI",
     "Microsoft YaHei", "PingFang SC", sans-serif;
   --sf-mono: "Consolas", "SFMono-Regular", "JetBrains Mono", ui-monospace, monospace;
+
+  /* 小队配色（4 队；与 shared/mode.js 的 SQUADS[i].ui 一致，仅作 CSS 兜底） */
+  --sq-alpha: #4a86c8;
+  --sq-bravo: #c8553f;
+  --sq-charlie: #4fa869;
+  --sq-delta: #c9a63f;
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -78,11 +85,13 @@ body::after {
 #ammoMag,
 #ammoReserve,
 #timer,
-#scoreAlpha,
-#scoreBravo,
 #compassHeading,
 #sensValue,
-#ping {
+#ping,
+.sq-rank,
+.sq-kills,
+.st-rank,
+.st-kills {
   font-family: var(--sf-mono);
   font-variant-numeric: tabular-nums;
 }
@@ -512,7 +521,7 @@ b { font-weight: 700; }
   color: var(--sf-faint);
 }
 
-/* ---------- 6. 顶部中央：罗盘 / 比分 / 据点 ---------- */
+/* ---------- 6. 顶部中央：罗盘 / 倒计时 / 4 队排名 ---------- */
 #hudTop {
   top: 12px;
   left: 50%;
@@ -608,31 +617,6 @@ b { font-weight: 700; }
   inset: 0;
   pointer-events: none;
 }
-.compass-zone {
-  position: absolute;
-  top: 0;
-  width: 20px;
-  height: 100%;
-  margin-left: -10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.compass-zone b {
-  width: 13px;
-  height: 13px;
-  line-height: 12px;
-  text-align: center;
-  font-family: var(--sf-mono);
-  font-size: 9px;
-  font-weight: 700;
-  color: #d9cfa5;
-  background: rgba(38, 40, 27, 0.9);
-  border: 1px solid rgba(220, 210, 170, 0.4);
-}
-.compass-zone.own-alpha b { color: #b9cede; border-color: rgba(126, 156, 178, 0.75); }
-.compass-zone.own-bravo b { color: #dfb09b; border-color: rgba(176, 114, 88, 0.75); }
-.compass-zone.fade { opacity: 0.4; }
 .compass-caret {
   position: absolute;
   left: 50%;
@@ -658,11 +642,12 @@ b { font-weight: 700; }
 
 #scoreBar {
   position: relative;
-  display: flex;
+  display: grid;
+  grid-template-columns: auto 1fr;
   align-items: center;
-  justify-content: space-between;
-  width: 420px;
-  padding: 5px 14px 6px;
+  gap: 10px;
+  width: 470px;
+  padding: 5px 12px 6px;
   background: var(--sf-panel);
   border: 1px solid var(--sf-line);
   border-radius: 2px;
@@ -679,33 +664,16 @@ b { font-weight: 700; }
 }
 #scoreBar::before { left: -1px; top: -1px; border-width: 2px 0 0 2px; }
 #scoreBar::after { right: -1px; bottom: -1px; border-width: 0 2px 2px 0; }
-.team-side {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 104px;
-}
-.team-side.team-bravo { justify-content: flex-end; }
-.team-tag-name {
-  font-size: 8.5px;
-  letter-spacing: 2px;
-  color: var(--sf-faint);
-}
-.team-alpha .team-tag-name { color: rgba(126, 156, 178, 0.85); }
-.team-bravo .team-tag-name { color: rgba(176, 114, 88, 0.85); }
-.score-val {
-  font-size: 26px;
-  font-weight: 700;
-  line-height: 1;
-  color: var(--sf-text);
-}
-.team-side.leading .score-val { color: #f2ecd6; }
-.team-side.trailing .score-val { color: var(--sf-muted); }
+
+/* 左：倒计时 + 玩法名 + 目标 */
 .score-mid {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 1px;
+  min-width: 104px;
+  padding-right: 10px;
+  border-right: 1px solid var(--sf-line);
   line-height: 1.05;
 }
 #timer {
@@ -724,227 +692,60 @@ b { font-weight: 700; }
   font-size: 8px;
   letter-spacing: 1px;
   color: rgba(230, 224, 204, 0.28);
-}
-
-#zoneBar {
-  display: flex;
-  justify-content: center;
-  gap: 6px;
-  width: 480px;
-}
-
-/* ---------- 拆弹模式 HUD ---------- */
-#bombHud {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 5px;
-  margin-top: 6px;
-}
-#bombHud.hidden { display: none; }
-#bombRoundScores {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 3px 12px;
-  background: rgba(16, 18, 12, 0.78);
-  border: 1px solid rgba(200, 178, 110, 0.28);
-  border-radius: 3px;
-  font-family: var(--sf-mono);
-  font-size: 12px;
-}
-#bombRoundScores .brs { display: flex; align-items: center; gap: 4px; }
-#bombRoundScores .brs b { font-size: 15px; font-weight: 700; }
-#bombRoundScores .brs.alpha b { color: #9ec6e8; }
-#bombRoundScores .brs.bravo b { color: #d09a82; }
-#bombRoundScores .brs i { width: 6px; height: 6px; border-radius: 50%; }
-#bombRoundScores .brs.alpha i { background: #6f9fc4; }
-#bombRoundScores .brs.bravo i { background: #c06a4e; }
-#bombRoundScores .brs-sep { color: var(--sf-faint); }
-#bombStatus {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 14px;
-  background: rgba(58, 16, 12, 0.86);
-  border: 1px solid rgba(214, 74, 52, 0.6);
-  border-radius: 3px;
-  font-family: var(--sf-mono);
-  font-size: 12px;
-  letter-spacing: 1px;
-  color: #f0c9b8;
-  animation: bombPulse 1s ease-in-out infinite;
-}
-#bombStatus.hidden { display: none; }
-#bombStatus #bombIcon { color: #ff6a4a; font-size: 14px; }
-#bombStatus #bombTimer { font-size: 15px; font-weight: 700; color: #ff8f6a; }
-@keyframes bombPulse {
-  0%, 100% { box-shadow: 0 0 0 rgba(214, 74, 52, 0); }
-  50% { box-shadow: 0 0 16px rgba(214, 74, 52, 0.5); }
-}
-#bombCarrier {
-  padding: 3px 12px;
-  background: rgba(58, 44, 12, 0.86);
-  border: 1px solid rgba(229, 200, 120, 0.55);
-  border-radius: 3px;
-  font-size: 11px;
-  letter-spacing: 0.6px;
-  color: #f2e3ae;
-}
-#bombCarrier.hidden { display: none; }
-#bombCarrier b { color: #ffd98a; }
-
-/* 购买界面 */
-#buyMenu {
-  z-index: 31;
-  background: rgba(6, 8, 6, 0.72);
-  -webkit-backdrop-filter: blur(4px);
-  backdrop-filter: blur(4px);
-  pointer-events: auto;
-}
-.buy-card {
-  min-width: 620px;
-  padding: 18px 22px;
-  border-color: rgba(200, 178, 110, 0.4);
-}
-.buy-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12px;
-  padding-bottom: 8px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-}
-#buyCredits { font-size: 17px; font-weight: 700; color: #cfe0a8; letter-spacing: 1px; }
-#buyTimer { font-size: 12px; color: var(--sf-faint); }
-#buyList {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 6px;
-}
-.buy-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 11px;
-  background: rgba(24, 26, 18, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.09);
-  border-radius: 3px;
-  cursor: pointer;
-  transition: border-color 0.12s, background 0.12s;
-}
-.buy-item:hover { border-color: rgba(229, 200, 120, 0.6); background: rgba(38, 40, 26, 0.95); }
-.buy-item.owned { border-color: rgba(150, 200, 120, 0.5); }
-.buy-item.cant { opacity: 0.45; cursor: not-allowed; }
-.buy-item .bi-key {
-  width: 20px; height: 20px;
-  display: grid; place-items: center;
-  background: rgba(255, 255, 255, 0.09);
-  border-radius: 2px;
-  font-family: var(--sf-mono);
-  font-size: 10px;
-  color: var(--sf-text);
-}
-.buy-item .bi-body { flex: 1; min-width: 0; }
-.buy-item .bi-name { font-size: 12px; color: var(--sf-text); letter-spacing: 0.4px; }
-.buy-item .bi-note { font-size: 10px; color: var(--sf-faint); margin-top: 2px; }
-.buy-item .bi-price {
-  font-family: var(--sf-mono);
-  font-size: 12px;
-  color: #cfe0a8;
   white-space: nowrap;
 }
-.buy-item.cant .bi-price { color: #cf8b78; }
 
-/* 交互提示（安放/拆除/捡包） */
-#bombPrompt {
-  position: absolute;
-  left: 50%;
-  top: 58%;
-  transform: translateX(-50%);
+/* 右：4 队击杀排名条（hud.js 按击杀数降序渲染，自己队伍高亮） */
+#squadBoard {
   display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 6px 16px;
-  z-index: 6;
-  background: rgba(12, 14, 9, 0.88);
-  border: 1px solid rgba(229, 200, 120, 0.5);
-  border-radius: 3px;
-  font-size: 12px;
-  letter-spacing: 0.6px;
-  color: #ece7d5;
-  pointer-events: none;
-}
-#bombPrompt.hidden { display: none; }
-#bombPrompt b {
-  display: grid; place-items: center;
-  width: 20px; height: 20px;
-  background: rgba(229, 200, 120, 0.9);
-  color: #1a1c14;
-  border-radius: 2px;
-  font-family: var(--sf-mono);
-  font-size: 11px;
-}
-.zone-chip {
-  flex: 1;
+  flex-direction: column;
+  gap: 2px;
   min-width: 0;
-  display: flex;
+}
+.squad-row {
+  display: grid;
+  grid-template-columns: 11px 7px 1fr auto;
   align-items: center;
   gap: 6px;
-  padding: 3px 7px;
-  background: rgba(18, 20, 14, 0.7);
-  border: 1px solid var(--sf-line);
-  border-radius: 2px;
+  padding: 1px 7px 1px 4px;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--sf-muted);
+  background: rgba(18, 20, 14, 0.55);
+  border-left: 2px solid var(--sq, var(--sf-sand-dim));
+  transition: background 0.15s ease, color 0.15s ease;
 }
-.zone-chip.inside { border-color: rgba(206, 196, 156, 0.58); }
-.z-letter {
-  flex: none;
-  width: 11px;
-  font-family: var(--sf-mono);
-  font-size: 11px;
-  font-weight: 700;
-  color: #d8cea6;
+.squad-row .sq-rank {
+  font-size: 8.5px;
+  text-align: center;
+  color: var(--sf-faint);
 }
-.z-name {
-  flex: none;
-  max-width: 50px;
+.squad-row .sq-color {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--sq, #8aa6b8);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+}
+.squad-row .sq-name {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 8.5px;
-  color: var(--sf-faint);
-}
-.z-track {
-  flex: 1;
-  min-width: 22px;
-  height: 4px;
-  background: rgba(255, 255, 255, 0.08);
-  overflow: hidden;
-}
-.z-track i {
-  display: block;
-  height: 100%;
-  width: 0;
-  background: var(--sf-muted);
-  transition: width 0.15s linear;
-}
-.zone-chip.owner-alpha .z-track i { background: var(--sf-alpha); }
-.zone-chip.owner-bravo .z-track i { background: var(--sf-bravo); }
-.zone-chip.owner-alpha { border-color: rgba(126, 156, 178, 0.4); }
-.zone-chip.owner-bravo { border-color: rgba(176, 114, 88, 0.4); }
-.zone-chip.contested .z-track i {
-  background-image: repeating-linear-gradient(45deg, rgba(0, 0, 0, 0.28) 0 4px, transparent 4px 8px);
-}
-.z-owner {
-  flex: none;
-  width: 24px;
-  text-align: right;
-  font-size: 8.5px;
   letter-spacing: 0.5px;
-  color: var(--sf-faint);
 }
-.zone-chip.owner-alpha .z-owner { color: #9eb8c9; }
-.zone-chip.owner-bravo .z-owner { color: #d09a82; }
+.squad-row .sq-kills {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--sf-text);
+}
+.squad-row.is-self {
+  color: #f2ecd6;
+  background: rgba(62, 68, 46, 0.6);
+  box-shadow: inset 0 0 0 1px rgba(206, 196, 156, 0.22);
+}
+.squad-row.is-self .sq-name { color: #f2ecd6; }
+.squad-row[data-rank="1"] .sq-kills { color: #f0e6b4; }
+
 
 /* ---------- 4.5 后台命令控制台 ---------- */
 #cmdBox {
@@ -1945,16 +1746,14 @@ b { font-weight: 700; }
 /* ---------- 14. 响应式：1280×720 → 1920×1080 均不重叠 ---------- */
 @media (max-width: 1240px) {
   #compass { width: 380px; }
-  #scoreBar { width: 380px; }
-  #zoneBar { width: 440px; }
+  #scoreBar { width: 430px; }
   #hint { font-size: 9.5px; }
 }
 
 @media (min-width: 1600px) {
   #minimapWrap { width: 216px; height: 216px; }
   #compass { width: 460px; }
-  #scoreBar { width: 460px; }
-  #zoneBar { width: 520px; }
+  #scoreBar { width: 500px; }
   #vitals { width: 330px; }
   #weaponSlots .slot { font-size: 12px; }
   #ammoMag { font-size: 38px; }
@@ -1971,3 +1770,100 @@ b { font-weight: 700; }
 @media (prefers-reduced-motion: reduce) {
   * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* ---------- 14. 死亡竞赛：4 队配色 / 击杀信息 / 结算排名 ---------- */
+/* 小队配色 token：数值与 shared/mode.js 的 SQUADS[i].ui 一致；
+   hud.js 还会把真实颜色内联写入，这里只是 CSS 兜底（--sq 供排名条/结算表复用） */
+.squad-alpha { --sq: var(--sq-alpha); }
+.squad-bravo { --sq: var(--sq-bravo); }
+.squad-charlie { --sq: var(--sq-charlie); }
+.squad-delta { --sq: var(--sq-delta); }
+
+/* 击杀信息：杀手[队色] ▸ 受害者[队色]（名字颜色由 hud.js 内联写入） */
+.kf-arrow {
+  flex: none;
+  font-size: 9px;
+  color: var(--sf-faint);
+}
+.kill-entry .kf-k,
+.kill-entry .kf-v { font-weight: 600; }
+
+/* 结算面板：4 队排名表 + 自己的名次 */
+#matchEndStandings {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+}
+.standings-row {
+  display: grid;
+  grid-template-columns: 16px 8px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  font-size: 12px;
+  color: var(--sf-muted);
+  background: rgba(18, 20, 14, 0.6);
+  border: 1px solid rgba(200, 190, 150, 0.1);
+  border-left: 2px solid var(--sq, var(--sf-sand-dim));
+}
+.standings-row .st-rank {
+  font-size: 10px;
+  color: var(--sf-faint);
+}
+.standings-row .st-color {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--sq, #8aa6b8);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.45);
+}
+.standings-row .st-name { letter-spacing: 1px; }
+.standings-row .st-kills {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--sf-text);
+}
+.standings-row.champion {
+  border-color: rgba(206, 196, 156, 0.38);
+  background: rgba(52, 54, 38, 0.6);
+  color: #e8e3d2;
+}
+.standings-row.champion .st-kills { color: #f2e7b0; }
+.standings-row.me-row {
+  color: #f2ecd6;
+  background: rgba(62, 68, 46, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(206, 196, 156, 0.26);
+}
+.standings-row.me-row .st-name::after {
+  content: "（我队）";
+  margin-left: 6px;
+  font-size: 10px;
+  color: var(--sf-faint);
+}
+.result-card { min-width: 470px; }
+#matchEnd.is-win .result-card { border-color: rgba(170, 190, 130, 0.42); }
+#matchEnd.is-lose .result-card { border-color: rgba(180, 90, 70, 0.36); }
+
+/* 菜单：地图描述（hud.js 按 MAP_META.desc 写入） */
+.menu-desc {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.7;
+  letter-spacing: 0.6px;
+  color: var(--sf-faint);
+}
+
+/* 左侧人员列表：按小队配色（左边条 + 队伍字母） */
+.player-row.squad-alpha { border-left-color: var(--sq-alpha); }
+.player-row.squad-bravo { border-left-color: var(--sq-bravo); }
+.player-row.squad-charlie { border-left-color: var(--sq-charlie); }
+.player-row.squad-delta { border-left-color: var(--sq-delta); }
+.player-row.squad-alpha .pteam { color: var(--sq-alpha); }
+.player-row.squad-bravo .pteam { color: var(--sq-bravo); }
+.player-row.squad-charlie .pteam { color: var(--sq-charlie); }
+.player-row.squad-delta .pteam { color: var(--sq-delta); }
+
+/* 名牌：队友名字偏亮（小队色圆点由 main.js 内联写入） */
+.name-tag .nm.mate { color: #cfe0ef; }
