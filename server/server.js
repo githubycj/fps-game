@@ -276,7 +276,8 @@ const zoneRuntime = ZONE_DEFS.map((z) => ({
 }));
 const scores = { alpha: 0, bravo: 0 };
 const match = {
-  mode: 'domination',
+  // 默认拆弹模式（经典 Search & Destroy）；'domination' 仍可切换
+  mode: (worldMod.MATCH_MODE === 'domination') ? 'domination' : 'bomb',
   // 'waiting'（等待真人按空格）→ 'countdown'（3s）→ 'playing' → 'ended'
   phase: 'waiting',
   countdown: 0,
@@ -286,10 +287,51 @@ const match = {
   round: 1,
   endedAt: 0,
 };
+
+// ============================================================
+// 拆弹模式运行时状态
+// ============================================================
+const BOMB_CFG = worldMod.BOMB || {
+  roundsToWin: 5, roundTime: 105, freezeTime: 6, plantTime: 3.2, defuseTime: 5,
+  defuseTimeKit: 2.5, fuseTime: 40, plantRadius: 3.2, defuseRadius: 2.2,
+  buyTime: 20, startCredits: 800, maxCredits: 9000, winCredits: 3000, lossCredits: 1900,
+  killCredits: 300, plantCredits: 300, defuseCredits: 300, sites: ['A', 'B'],
+};
+const BUY_MENU = worldMod.BUY_MENU || [];
+const bomb = {
+  // 'idle' | 'carried' | 'planted' | 'defused' | 'exploded'
+  state: 'idle',
+  carrierId: null,
+  site: null,           // 'A' | 'B'
+  x: 0, z: 0, y: 0,
+  plantedAt: 0,
+  fuseAt: 0,            // 爆炸时间戳
+  defuseUntil: 0,       // 正在拆除的完成时间戳（0=没人拆）
+  defuseById: null,
+  plantUntil: 0,        // 正在安放的完成时间戳
+  plantById: null,
+  roundScores: { alpha: 0, bravo: 0 },
+  freezeUntil: 0,       // 回合开始冻结结束时间
+  buyUntil: 0,          // 购买窗口结束时间
+  roundEndReason: null,
+};
+// 玩家资金（p.id -> credits），每回合按胜负结算
+const credits = new Map();
+function creditsOf(p) {
+  if (!credits.has(p.id)) credits.set(p.id, BOMB_CFG.startCredits);
+  return credits.get(p.id);
+}
+function addCredits(p, n) {
+  const v = Math.max(0, Math.min(BOMB_CFG.maxCredits, creditsOf(p) + n));
+  credits.set(p.id, v);
+  send(p.ws, { t: 'credits', credits: v });
+  return v;
+}
+
 const uav = { alpha: 0, bravo: 0 };   // 队伍 UAV 截止时间（epoch ms，0=无）
 const killfeed = [];                  // 最近击杀信息（state.killfeed）
 
-// 固定武器箱刷新状态
+// 固定武器箱刷新状态（拆弹模式不再使用武器箱，保留空数组以兼容旧接口）
 const crateState = CRATE_SPOTS.map((spot, index) => ({ spot, index, itemId: null, respawnAt: 0 }));
 // 消耗品固定点补货状态
 const pickupSpots = ITEM_SPOTS.map((spot, index) => ({ spot, index, itemId: null, respawnAt: 0 }));
@@ -620,6 +662,8 @@ function snapshot(p) {
     speed: now < (p.speedUntil || 0),
     uav: now < (uav[p.team] || 0),
     respawnIn: p.alive ? 0 : Math.max(0, Math.ceil(((p.respawnAt || 0) - now) / 1000)),
+    // 拆弹模式：每人自己的资金（客户端购买界面显示）
+    credits: match.mode === 'bomb' ? creditsOf(p) : undefined,
     bot: p.bot ? true : undefined,
   };
 }
@@ -641,13 +685,27 @@ function stateMessage(now = Date.now()) {
       target: match.target,
       winner: match.winner,
       round: match.round,
+      roundScores: { ...bomb.roundScores },
     },
+    // 拆弹模式状态（客户端 HUD / 小地图 / 炸弹标记用）
+    bomb: match.mode === 'bomb' ? {
+      state: bomb.state,
+      carrierId: bomb.carrierId,
+      site: bomb.site,
+      x: round3(bomb.x), y: round3(bomb.y), z: round3(bomb.z),
+      fuseLeft: bomb.state === 'planted' ? Math.max(0, Math.ceil((bomb.fuseAt - now) / 1000)) : 0,
+      plantLeft: bomb.plantUntil > 0 ? Math.max(0, +((bomb.plantUntil - now) / 1000).toFixed(1)) : 0,
+      defuseLeft: bomb.defuseUntil > 0 ? Math.max(0, +((bomb.defuseUntil - now) / 1000).toFixed(1)) : 0,
+      defuseById: bomb.defuseById,
+      freezeLeft: Math.max(0, +((bomb.freezeUntil - now) / 1000).toFixed(1)),
+      buyLeft: Math.max(0, +((bomb.buyUntil - now) / 1000).toFixed(1)),
+      sites: bombSiteList().map((s) => ({ id: s.id, name: s.name, x: s.x, z: s.z, r: s.r })),
+    } : null,
     uav: { alpha: uavDeadline('alpha', now), bravo: uavDeadline('bravo', now) },
     killfeed: killfeed.slice(-RULES.killfeedMax),
     env: { mode: worldEnv.mode },
   };
-}
-function welcomeMessage(p) {
+}function welcomeMessage(p) {
   return {
     t: 'welcome',
     id: p.id,
@@ -667,6 +725,11 @@ function welcomeMessage(p) {
     scores: { alpha: Math.round(scores.alpha * 10) / 10, bravo: Math.round(scores.bravo * 10) / 10 },
     uav: { alpha: uavDeadline('alpha'), bravo: uavDeadline('bravo') },
     env: { mode: worldEnv.mode },
+    // 拆弹模式：购买菜单 + 初始资金 + 当前回合比分
+    bombConfig: match.mode === 'bomb' ? BOMB_CFG : null,
+    buyMenu: match.mode === 'bomb' ? BUY_MENU : null,
+    credits: creditsOf(p),
+    roundScores: { ...bomb.roundScores },
   };
 }
 
@@ -808,13 +871,19 @@ function initItems() {
   // 对账：状态里有 itemId 但 items 已被清空（测试/重置场景）时重新生成
   for (const st of crateState) if (st.itemId && !items.has(st.itemId)) { st.itemId = null; st.respawnAt = 0; }
   for (const st of pickupSpots) if (st.itemId && !items.has(st.itemId)) { st.itemId = null; st.respawnAt = 0; }
-  for (let i = 0; i < crateState.length; i++) spawnCrate(i);
+  // 拆弹模式：不再生成武器箱（改用购买系统），只保留医疗包等消耗品
+  if (match.mode !== 'bomb') {
+    for (let i = 0; i < crateState.length; i++) spawnCrate(i);
+  }
   const max = Math.max(0, Number(process.env.ITEMS_MAX ?? pickupSpots.length));
   for (let i = 0; i < Math.min(max, pickupSpots.length); i++) spawnPickupSpot(i);
 }
 function updateItemRespawns(now) {
-  for (const st of crateState) {
-    if (!st.itemId && st.respawnAt && now >= st.respawnAt) spawnCrate(st.index);
+  // 拆弹模式跳过武器箱刷新
+  if (match.mode !== 'bomb') {
+    for (const st of crateState) {
+      if (!st.itemId && st.respawnAt && now >= st.respawnAt) spawnCrate(st.index);
+    }
   }
   for (const st of pickupSpots) {
     if (!st.itemId && st.respawnAt && now >= st.respawnAt) spawnPickupSpot(st.index);
@@ -1003,8 +1072,38 @@ function onKill(killer, victim, part) {
     broadcast({ t: 'streak', playerId: killer.id, name: killer.name, streak: killer.streak });
   }
   eventBus.emit('death', entry);
+  // 拆弹模式：击杀奖励 + 携带者阵亡则掉包 + 进攻方全灭则防守方胜
+  if (match.mode === 'bomb' && match.phase === 'playing') {
+    if (killer) addCredits(killer, BOMB_CFG.killCredits);
+    onBombCarrierDied(victim);
+    checkRoundElimination();
+  }
   // 5 连杀（不死）→ 全队 UAV 10s
   if (killer && killer.streak > 0 && killer.streak % UAV_KILLSTREAK === 0) triggerUav(killer);
+}
+
+/** 拆弹模式：一方全部阵亡时判胜负 */
+function checkRoundElimination() {
+  if (match.mode !== 'bomb' || match.phase !== 'playing') return;
+  let alphaAlive = 0, bravoAlive = 0;
+  for (const p of players.values()) {
+    if (!p.alive) continue;
+    if (p.team === 'alpha') alphaAlive += 1;
+    else if (p.team === 'bravo') bravoAlive += 1;
+  }
+  // 炸弹已安放时，进攻方全灭不算输（炸弹还在倒计时）
+  if (alphaAlive === 0 && bomb.state !== 'planted') {
+    endRound('bravo', 'elimination');
+    return;
+  }
+  if (bravoAlive === 0) {
+    // 防守方全灭：若炸弹已安放，直接判进攻方胜；否则也要等安放/时间到
+    if (bomb.state === 'planted') endRound('alpha', 'elimination');
+    else if (bomb.state === 'carried' || bomb.state === 'dropped') {
+      // 防守方全灭且炸弹未安放 → 进攻方可以安全安放，直接判胜更符合快节奏
+      endRound('alpha', 'elimination');
+    }
+  }
 }
 
 function triggerUav(p) {
@@ -1029,6 +1128,8 @@ function handleShoot(p, msg = {}) {
   // 只有正式开赛后才能开火（等待/倒计时阶段禁止对枪）
   if (match.phase !== 'playing') return false;
   const now = Date.now();
+  // 拆弹模式：回合开始的冻结时间内禁止开火（双方都站着买枪）
+  if (match.mode === 'bomb' && now < (bomb.freezeUntil || 0)) return false;
   if (now < (p.swapUntil || 0)) return false;                       // 切枪硬直
   if ((p.reloadUntil || 0) > 0) return false;                       // 换弹中
   const w = weaponOf(p.weapon);
@@ -1497,6 +1598,7 @@ function endMatch(winner, reason) {
     winner,
     reason,
     scores: { alpha: Math.round(scores.alpha * 10) / 10, bravo: Math.round(scores.bravo * 10) / 10 },
+    roundScores: { ...bomb.roundScores },
     target: match.target,
     timeLeft: Math.max(0, Math.ceil(match.timeLeft)),
     match: matchSummary(),
@@ -1516,6 +1618,8 @@ function resetMatch() {
   uav.alpha = 0;
   uav.bravo = 0;
   killfeed.length = 0;
+  bomb.roundScores.alpha = 0;
+  bomb.roundScores.bravo = 0;
   for (const z of zoneRuntime) {
     z.owner = null;
     z.capture = 0;
@@ -1524,6 +1628,258 @@ function resetMatch() {
     z.counts.bravo = 0;
   }
   if (isMain) console.log('[match] 第 ' + match.round + ' 局准备：等待真人按空格开始');
+}
+
+// ============================================================
+// 拆弹模式：回合流程
+// ============================================================
+
+/** 找一个包点（ZONES 里的 A/B） */
+function bombSiteById(id) {
+  return zoneRuntime.find((z) => z.id === id) || zoneRuntime[0];
+}
+function bombSiteList() {
+  return (BOMB_CFG.sites || ['A', 'B'])
+    .map((id) => bombSiteById(id))
+    .filter(Boolean);
+}
+
+/** 重置炸弹状态 */
+function resetBomb() {
+  bomb.state = 'idle';
+  bomb.carrierId = null;
+  bomb.site = null;
+  bomb.x = 0; bomb.y = 0; bomb.z = 0;
+  bomb.plantedAt = 0;
+  bomb.fuseAt = 0;
+  bomb.defuseUntil = 0;
+  bomb.defuseById = null;
+  bomb.plantUntil = 0;
+  bomb.plantById = null;
+  bomb.roundEndReason = null;
+}
+
+/** 把一个玩家送回出生点并复活（回合开始时用） */
+function respawnForRound(p) {
+  if (p.bot) {
+    // AI 直接复用 respawn 逻辑
+    p.alive = true;
+    p.hp = p.maxHp ?? W.maxHp;
+    p.shield = RULES.shieldMax;
+    p.respawnAt = 0;
+    return;
+  }
+  respawn(p);
+}
+
+/** 回合开始：复活所有人、重置炸弹、发资金、开购买窗口 */
+function startRound(now = Date.now()) {
+  resetBomb();
+  for (const p of players.values()) respawnForRound(p);
+  // 进攻方随机一人携带炸弹
+  const attackers = [...players.values()].filter((p) => p.team === 'alpha');
+  if (attackers.length) {
+    const carrier = attackers[Math.floor(Math.random() * attackers.length)];
+    bomb.carrierId = carrier.id;
+    bomb.state = 'carried';
+  }
+  bomb.freezeUntil = now + BOMB_CFG.freezeTime * 1000;
+  bomb.buyUntil = now + BOMB_CFG.buyTime * 1000;
+  match.timeLeft = BOMB_CFG.roundTime;
+  match.phase = 'playing';
+  // 每回合发基础资金
+  for (const p of players.values()) {
+    if (creditsOf(p) < BOMB_CFG.lossCredits) addCredits(p, BOMB_CFG.lossCredits);
+  }
+  broadcast({
+    t: 'round_start',
+    round: match.round,
+    roundScores: { ...bomb.roundScores },
+    freezeUntil: bomb.freezeUntil,
+    buyUntil: bomb.buyUntil,
+    bombCarrierId: bomb.carrierId,
+    timeLeft: Math.ceil(match.timeLeft),
+  });
+  if (isMain) console.log('[bomb] 回合 ' + match.round + ' 开始，炸弹携带者 ' + (bomb.carrierId || '无'));
+}
+
+/** 回合结束：结算胜负、发奖金、进入下一回合 */
+function endRound(winner, reason) {
+  if (match.phase === 'ended') return;
+  bomb.roundEndReason = reason;
+  if (winner === 'alpha') bomb.roundScores.alpha += 1;
+  else if (winner === 'bravo') bomb.roundScores.bravo += 1;
+  // 资金结算
+  for (const p of players.values()) {
+    const won = p.team === winner;
+    addCredits(p, won ? BOMB_CFG.winCredits : BOMB_CFG.lossCredits);
+  }
+  broadcast({
+    t: 'round_end',
+    winner,
+    reason,
+    round: match.round,
+    roundScores: { ...bomb.roundScores },
+    scores: { ...bomb.roundScores },
+  });
+  if (isMain) console.log('[bomb] 回合结束：' + (winner || '平') + '（' + reason + '） 比分 ' +
+    bomb.roundScores.alpha + ':' + bomb.roundScores.bravo);
+  // 判定整场胜负
+  if (bomb.roundScores.alpha >= BOMB_CFG.roundsToWin) { endMatch('alpha', 'rounds'); return; }
+  if (bomb.roundScores.bravo >= BOMB_CFG.roundsToWin) { endMatch('bravo', 'rounds'); return; }
+  // 下一回合（延迟 4 秒）
+  match.round += 1;
+  match.phase = 'round_end';
+  setTimeout(() => {
+    if (match.phase === 'round_end') startRound(Date.now());
+  }, 4000);
+}
+
+/** 玩家死亡时：如果是携带者，炸弹掉落在原地 */
+function onBombCarrierDied(p) {
+  if (bomb.state === 'carried' && bomb.carrierId === p.id) {
+    bomb.state = 'dropped';
+    bomb.x = p.x; bomb.z = p.z; bomb.y = heightAt(p.x, p.z);
+    broadcast({ t: 'bomb_dropped', x: round3(bomb.x), y: round3(bomb.y), z: round3(bomb.z) });
+    if (isMain) console.log('[bomb] 携带者阵亡，炸弹掉落在 ' + round3(bomb.x) + ',' + round3(bomb.z));
+  }
+}
+
+/** 处理安放（按住 E 或自动，由客户端发 bomb_plant） */
+function tryPlantBomb(p, now) {
+  if (match.mode !== 'bomb' || match.phase !== 'playing') return false;
+  if (bomb.state !== 'carried' || bomb.carrierId !== p.id) return false;
+  if (!p.alive) return false;
+  if (now < bomb.freezeUntil) return false;
+  // 必须在包点半径内
+  const sites = bombSiteList();
+  const site = sites.find((s) => Math.hypot(p.x - s.x, p.z - s.z) <= BOMB_CFG.plantRadius);
+  if (!site) {
+    send(p.ws, { t: 'bomb_plant_fail', reason: 'not_in_site' });
+    return false;
+  }
+  bomb.site = site.id;
+  bomb.x = p.x; bomb.z = p.z; bomb.y = heightAt(p.x, p.z);
+  bomb.plantById = p.id;
+  bomb.plantUntil = now + BOMB_CFG.plantTime * 1000;
+  broadcast({ t: 'bomb_planting', byId: p.id, byName: p.name, site: site.id, until: bomb.plantUntil });
+  return true;
+}
+
+/** 完成安放 */
+function finishPlant(now) {
+  bomb.state = 'planted';
+  bomb.plantedAt = now;
+  bomb.fuseAt = now + BOMB_CFG.fuseTime * 1000;
+  bomb.plantUntil = 0;
+  const planter = players.get(bomb.plantById);
+  if (planter) addCredits(planter, BOMB_CFG.plantCredits);
+  // 安放后回合时间改为炸弹倒计时
+  match.timeLeft = BOMB_CFG.fuseTime;
+  broadcast({
+    t: 'bomb_planted',
+    site: bomb.site, x: round3(bomb.x), y: round3(bomb.y), z: round3(bomb.z),
+    fuseAt: bomb.fuseAt, byId: bomb.plantById,
+    timeLeft: BOMB_CFG.fuseTime,
+  });
+  if (isMain) console.log('[bomb] 炸弹已在 ' + bomb.site + ' 点安放，' + BOMB_CFG.fuseTime + 's 后引爆');
+}
+
+/** 开始拆除 */
+function tryDefuseBomb(p, now) {
+  if (match.mode !== 'bomb' || match.phase !== 'playing') return false;
+  if (bomb.state !== 'planted' || !p.alive) return false;
+  if (p.team !== 'bravo') return false;      // 只有防守方能拆
+  const d = Math.hypot(p.x - bomb.x, p.z - bomb.z);
+  if (d > BOMB_CFG.defuseRadius) {
+    send(p.ws, { t: 'bomb_defuse_fail', reason: 'too_far' });
+    return false;
+  }
+  const dur = (p.hasDefuseKit ? BOMB_CFG.defuseTimeKit : BOMB_CFG.defuseTime) * 1000;
+  bomb.defuseById = p.id;
+  bomb.defuseUntil = now + dur;
+  broadcast({ t: 'bomb_defusing', byId: p.id, byName: p.name, until: bomb.defuseUntil, duration: dur });
+  return true;
+}
+
+/** 完成拆除 */
+function finishDefuse(now) {
+  bomb.state = 'defused';
+  bomb.defuseUntil = 0;
+  const defuser = players.get(bomb.defuseById);
+  if (defuser) addCredits(defuser, BOMB_CFG.defuseCredits);
+  broadcast({ t: 'bomb_defused', byId: bomb.defuseById, byName: defuser ? defuser.name : '' });
+  if (isMain) console.log('[bomb] 炸弹已拆除');
+  endRound('bravo', 'defused');
+}
+
+/** 炸弹爆炸 */
+function explodeBomb(now) {
+  bomb.state = 'exploded';
+  broadcast({ t: 'bomb_exploded', x: round3(bomb.x), y: round3(bomb.y), z: round3(bomb.z), site: bomb.site });
+  if (isMain) console.log('[bomb] 炸弹爆炸');
+  // 爆炸范围内的人直接死亡
+  for (const p of players.values()) {
+    if (!p.alive) continue;
+    const d = Math.hypot(p.x - bomb.x, p.z - bomb.z);
+    if (d <= 16) {
+      p.hp = 0;
+      p.alive = false;
+      p.deaths = (p.deaths || 0) + 1;
+      p.respawnAt = now + 999999;   // 回合结束前不重生
+      broadcast({ t: 'death', victimId: p.id, victimName: p.name, killerId: null, weapon: 'bomb', headshot: false, killfeed: null });
+    }
+  }
+  endRound('alpha', 'exploded');
+}
+
+/** 每 tick 推进拆弹状态 */
+function updateBomb(dt, now) {
+  if (match.mode !== 'bomb') return;
+  if (match.phase !== 'playing') return;
+
+  // 安放进行中
+  if (bomb.state === 'carried' && bomb.plantUntil > 0) {
+    const planter = players.get(bomb.plantById);
+    // 安放者死亡或离开点位则中断
+    if (!planter || !planter.alive) {
+      bomb.plantUntil = 0; bomb.plantById = null;
+      broadcast({ t: 'bomb_plant_cancel', reason: 'died' });
+    } else if (now >= bomb.plantUntil) {
+      finishPlant(now);
+    }
+  }
+
+  // 已安放：检查拆除与引爆
+  if (bomb.state === 'planted') {
+    // 拆除中：拆除者必须活着且在范围内
+    if (bomb.defuseUntil > 0) {
+      const defuser = players.get(bomb.defuseById);
+      const stillThere = defuser && defuser.alive &&
+        Math.hypot(defuser.x - bomb.x, defuser.z - bomb.z) <= BOMB_CFG.defuseRadius + 0.6;
+      if (!stillThere) {
+        bomb.defuseUntil = 0; bomb.defuseById = null;
+        broadcast({ t: 'bomb_defuse_cancel' });
+      } else if (now >= bomb.defuseUntil) {
+        finishDefuse(now);
+        return;
+      }
+    }
+    // 倒计时结束 → 爆炸
+    if (now >= bomb.fuseAt) { explodeBomb(now); return; }
+    // 同步剩余时间
+    match.timeLeft = Math.max(0, (bomb.fuseAt - now) / 1000);
+    return;
+  }
+
+  // 未安放：回合倒计时
+  if (bomb.state !== 'planted' && bomb.state !== 'exploded' && bomb.state !== 'defused') {
+    match.timeLeft -= dt;
+    if (match.timeLeft <= 0) {
+      match.timeLeft = 0;
+      endRound('bravo', 'time');   // 时间到未安放 → 防守方胜
+    }
+  }
 }
 
 // 真人按空格 → 进入 3 秒倒计时
@@ -1544,6 +1900,7 @@ function forceMatchStart() {
   match.timeLeft = MATCH_TIME_LIMIT;
   match.winner = null;
   match.endedAt = 0;
+  if (match.mode === 'bomb') startRound(Date.now());
   return true;
 }
 
@@ -1555,10 +1912,14 @@ function updateMatch(dt, now) {
   if (match.phase === 'countdown') {
     match.countdown = Math.max(0, match.countdown - dt);
     if (match.countdown <= 0) {
-      match.phase = 'playing';
       match.countdown = 0;
-      match.timeLeft = MATCH_TIME_LIMIT;
       broadcast({ t: 'match_start', round: match.round });
+      if (match.mode === 'bomb') {
+        startRound(now);
+      } else {
+        match.phase = 'playing';
+        match.timeLeft = MATCH_TIME_LIMIT;
+      }
       if (isMain) console.log('[match] 第 ' + match.round + ' 局正式开始');
     }
     return;
@@ -1567,6 +1928,14 @@ function updateMatch(dt, now) {
     if (now - (match.endedAt || 0) >= RULES.matchResetDelay * 1000) resetMatch();
     return;
   }
+  if (match.phase === 'round_end') return;
+
+  // 拆弹模式走独立流程
+  if (match.mode === 'bomb') {
+    updateBomb(dt, now);
+    return;
+  }
+
   match.timeLeft -= dt;
   // 先到 MATCH_SCORE_TARGET
   if (scores.alpha >= match.target) { endMatch('alpha', 'score'); return; }
@@ -1641,10 +2010,41 @@ const AI_ROLE_ORDER = ['assault', 'support', 'marksman', 'scout'];
 // 每队已分配的角色计数（保证一队里角色尽量不重复）
 const teamRoleCursor = { alpha: 0, bravo: 0 };
 
+// 特殊武器限制：霰弹枪与狙击枪在【同一队伍】里合计最多 1 把（二选一）。
+// 每队记录已占用的特殊武器；若 scout 拿到霰弹枪，则该队不能再有狙击枪，反之亦然。
+const SPECIAL_WEAPONS = new Set(['shotgun', 'sniper']);
+const teamSpecialUsed = { alpha: null, bravo: null };
+
+/** 统计某队当前已持有的特殊武器（霰弹/狙击） */
+function teamSpecialWeapon(team) {
+  for (const p of players.values()) {
+    if (p.team !== team || !p.bot) continue;
+    if (SPECIAL_WEAPONS.has(p.weapon)) return p.weapon;
+  }
+  return teamSpecialUsed[team] || null;
+}
+
 function nextRoleFor(team) {
   const cur = teamRoleCursor[team] || 0;
   teamRoleCursor[team] = (cur + 1) % AI_ROLE_ORDER.length;
   return AI_ROLE_ORDER[cur % AI_ROLE_ORDER.length];
+}
+
+/**
+ * 为 AI 选择实际武器：处理"霰弹枪/狙击枪二选一"限制。
+ * - scout 想用霰弹枪，但该队已有狙击枪 → 改用 smg
+ * - marksman 想用狙击枪（如果有），但该队已有霰弹枪 → 改用 ak47
+ */
+function resolveBotWeapon(team, roleCfg) {
+  const wanted = roleCfg.weapon;
+  if (!SPECIAL_WEAPONS.has(wanted)) return wanted;
+  const used = teamSpecialWeapon(team);
+  if (used && used !== wanted) {
+    // 已被另一种特殊武器占用 → 退化为通用武器
+    return roleCfg.fallbackWeapon || (wanted === 'shotgun' ? 'smg' : 'ak47');
+  }
+  teamSpecialUsed[team] = wanted;
+  return wanted;
 }
 
 // 创建 AI（默认敌军；team 支持 alpha/bravo 与旧名 ally/enemy）
@@ -1653,7 +2053,8 @@ function createBot(teamArg, roleArg) {
   const spawn = freeSpawn(team);
   const role = AI_ROLES[roleArg] ? roleArg : nextRoleFor(team);
   const roleCfg = AI_ROLES[role] || AI_ROLES.assault;
-  const primary = roleCfg.weapon;
+  // 实际武器：应用"霰弹枪/狙击枪同队二选一"限制
+  const primary = resolveBotWeapon(team, roleCfg);
   const owned = { pistol: true };
   const ammo = {};
   // 主武器 + 副武器（altWeapon，例如精确射手的沙漠之鹰）
@@ -2206,6 +2607,26 @@ function handleDebug(msg) {
       if (team === 'alpha' || team === 'bravo') scores[team] = Math.max(0, Number(msg.value) || 0);
       break;
     }
+    // 调试：直接判某一方赢下本回合（拆弹模式测试用）
+    case 'debug_round_win': {
+      const team = normalizeTeam(msg.team);
+      if (match.mode === 'bomb' && match.phase === 'playing') endRound(team, 'debug');
+      break;
+    }
+    // 调试：直接把炸弹放到安放状态（跳过携带/安放流程）
+    case 'debug_plant': {
+      if (match.mode !== 'bomb' || match.phase !== 'playing') break;
+      const siteId = msg.site || 'A';
+      const site = bombSiteById(siteId);
+      if (!site) break;
+      bomb.state = 'carried';
+      bomb.carrierId = player ? player.id : null;
+      bomb.x = site.x; bomb.z = site.z; bomb.y = heightAt(site.x, site.z);
+      bomb.site = site.id;
+      bomb.plantById = player ? player.id : null;
+      finishPlant(now);
+      break;
+    }
     case 'debug_time': {
       match.timeLeft = Math.max(0, Number(msg.timeLeft ?? msg.value) || 0);
       break;
@@ -2289,6 +2710,47 @@ wss.on('connection', (ws) => {
         if (player) switchWeapon(player, msg.weapon);
         break;
       }
+      // ===== 拆弹模式协议 =====
+      case 'buy': {
+        // 购买武器（回合开始购买窗口内）
+        if (!player) return;
+        if (match.mode !== 'bomb') { send(ws, { t: 'buy_result', ok: false, msg: '当前模式不支持购买' }); return; }
+        if (now > bomb.buyUntil) { send(ws, { t: 'buy_result', ok: false, msg: '购买时间已结束' }); return; }
+        const item = BUY_MENU.find((b) => b.id === msg.weapon);
+        if (!item) { send(ws, { t: 'buy_result', ok: false, msg: '未知武器' }); return; }
+        const have = creditsOf(player);
+        if (have < item.price) {
+          send(ws, { t: 'buy_result', ok: false, msg: '资金不足（需要 ' + item.price + '）', credits: have });
+          return;
+        }
+        credits.set(player.id, have - item.price);
+        grantWeapon(player, item.id);
+        send(ws, {
+          t: 'buy_result', ok: true, weapon: item.id, price: item.price,
+          credits: credits.get(player.id), msg: '已购买 ' + item.name,
+        });
+        if (isMain) console.log('[buy] ' + player.name + ' 购买 ' + item.id + '（剩 ' + credits.get(player.id) + '）');
+        break;
+      }
+      case 'bomb_plant': {
+        if (player) tryPlantBomb(player, now);
+        break;
+      }
+      case 'bomb_defuse': {
+        if (player) tryDefuseBomb(player, now);
+        break;
+      }
+      case 'bomb_pickup': {
+        // 捡起掉落的炸弹
+        if (!player || match.mode !== 'bomb') return;
+        if (bomb.state !== 'dropped') return;
+        if (player.team !== 'alpha' || !player.alive) return;
+        if (Math.hypot(player.x - bomb.x, player.z - bomb.z) > 2.2) return;
+        bomb.state = 'carried';
+        bomb.carrierId = player.id;
+        broadcast({ t: 'bomb_pickup', byId: player.id, byName: player.name });
+        break;
+      }
       case 'ping': {
         send(ws, { t: 'pong', time: msg.time, serverTime: now });
         break;
@@ -2352,7 +2814,12 @@ async function start() {
   initItems();
   server.listen(PORT, '0.0.0.0', () => {
     console.log('[server] 郊区战场服务器已启动：' + PORT + '（HTTP + WebSocket /ws）');
-    console.log('[server] 模式 Domination：' + ZONE_DEFS.map((z) => z.id).join('/') + '，先到 ' + MATCH_SCORE_TARGET + ' 分或 ' + MATCH_TIME_LIMIT + 's');
+    if (match.mode === 'bomb') {
+      console.log('[server] 模式 拆弹（Search & Destroy）：' + (BOMB_CFG.sites || ['A', 'B']).join('/') +
+        ' 包点，先赢 ' + BOMB_CFG.roundsToWin + ' 回合；回合 ' + BOMB_CFG.roundTime + 's，炸弹 ' + BOMB_CFG.fuseTime + 's');
+    } else {
+      console.log('[server] 模式 Domination：' + ZONE_DEFS.map((z) => z.id).join('/') + '，先到 ' + MATCH_SCORE_TARGET + ' 分或 ' + MATCH_TIME_LIMIT + 's');
+    }
   });
   spawnInitialBots();
 
@@ -2420,6 +2887,17 @@ export {
   stateMessage,
   requestMatchStart,
   forceMatchStart,
+  // 拆弹模式（测试/集成用）
+  bomb,
+  BOMB_CFG,
+  BUY_MENU,
+  creditsOf,
+  addCredits,
+  startRound,
+  endRound,
+  tryPlantBomb,
+  tryDefuseBomb,
+  resetBomb,
   zoneRuntime as zones,
   scores,
   match,

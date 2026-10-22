@@ -13,6 +13,7 @@ import {
   resolveQuality, presetOf, isQuality, isSoftwareRenderer,
 } from './world/quality.js';
 import { createSky } from './world/sky.js';
+import { createMountains } from './world/mountains.js';
 import { createLighting } from './world/lighting.js';
 import { createTerrain } from './world/terrain.js';
 import { createBuildings } from './world/buildings.js';
@@ -46,6 +47,17 @@ export function buildWorld(scene, renderer, opts = {}) {
 
   // ---------- 天空 + 云 + PMREM 环境贴图 ----------
   const sky = createSky(scene, { renderer, preset, anisotropy });
+
+  // ---------- 远山（分形噪声 + 光线步进：雪山 / 软阴影 / 大气透视）----------
+  let mountains = null;
+  try {
+    mountains = createMountains(scene, { preset, sunDir: sky.sunDir, anisotropy });
+    // 与天空色同步，远山雾化色才能与地平线无缝衔接
+    if (mountains.syncSkyColors && sky.skyMat) mountains.syncSkyColors(sky.skyMat);
+  } catch (e) {
+    console.warn('[world] 远山创建失败：', e && e.message);
+    mountains = null;
+  }
 
   // ---------- 地形 ----------
   let terrain = createTerrain({ preset, anisotropy });
@@ -124,6 +136,10 @@ export function buildWorld(scene, renderer, opts = {}) {
 
     // 天空/云跟随相机
     sky.update(step, camera);
+    // 远山跟随相机（视差）+ 太阳方向同步
+    if (mountains) {
+      try { mountains.update(step, camera); } catch { /* ignore */ }
+    }
 
     // 植被风摆 + 玩家压草
     vegetation.update(step, target);
@@ -218,6 +234,16 @@ export function buildWorld(scene, renderer, opts = {}) {
     if (sky.sunSprite && sky.sunSprite.material) {
       sky.sunSprite.material.opacity = lerp(1, 0.12, t);
     }
+    // 远山：同步天空色（夜间远山也变暗变蓝）
+    if (mountains) {
+      try {
+        if (mountains.syncSkyColors) mountains.syncSkyColors(sky.skyMat);
+        if (mountains.setNight) mountains.setNight(t);
+        else if (mountains.material && mountains.material.uniforms && mountains.material.uniforms.uNight) {
+          mountains.material.uniforms.uNight.value = t;
+        }
+      } catch { /* ignore */ }
+    }
   }
   function setEnv(mode, instant = false) {
     const m = mode === 'dark' ? 'dark' : 'day';
@@ -270,6 +296,7 @@ export function buildWorld(scene, renderer, opts = {}) {
     vegetation.setQuality(preset);
     buildings.setQuality(preset);
     sky.setQuality(preset);
+    if (mountains) { try { mountains.setQuality(preset); } catch { /* ignore */ } }
     if (post) post.applyPreset(preset);
     return quality;
   }
@@ -277,6 +304,7 @@ export function buildWorld(scene, renderer, opts = {}) {
   // ---------- 资源释放 ----------
   function dispose() {
     if (post) { post.dispose(); post = null; }
+    if (mountains) { try { mountains.dispose(); } catch { /* ignore */ } mountains = null; }
     items.dispose();
     vegetation.dispose();
     props.dispose();
@@ -301,6 +329,7 @@ export function buildWorld(scene, renderer, opts = {}) {
     fog: lighting.fog,
     sunDir: lighting.sunDir,
     sky,
+    get mountains() { return mountains; },
     get terrain() { return terrain; },
     buildings,
     pylons,

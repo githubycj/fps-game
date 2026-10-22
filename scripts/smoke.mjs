@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocket } from 'ws';
 import {
-  WORLD, ZONES, SPAWNS, COLLIDERS, HOUSES, heightAt, terrainNormal, surfaceAt,
+  WORLD, ZONES, SPAWNS, COLLIDERS, HOUSES, WORLD_INFO, heightAt, terrainNormal, surfaceAt,
   houseWallSegments, circleOverlapsBox, stepPlayerPhysics, movePlayerHorizontal, applyJump,
   raycastWorld, losBlocked, isWalkableAt, hitboxesFor, groundHeightAt,
 } from '../shared/world.js';
@@ -16,7 +16,9 @@ import {
   createPlayer, createBot, handleShoot, respawn, snapshot, updatePlayer, canSee, countBots,
   spawnItem, applyItem, items, players, startReload, finishReload, switchWeapon, grantWeapon,
   ammoOf, stepOnce, stateMessage, zones, scores, match, uav, ensureNav, RULES, killfeed,
+  bomb, BOMB_CFG, BUY_MENU, endRound, startRound, creditsOf, addCredits,
 } from '../server/server.js';
+import * as serverMod from '../server/server.js';
 import { buildNav, findPath, hasLineOfWalk, nearestWalkable } from '../server/nav.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -44,8 +46,10 @@ function aimAt(from, to, part = 'body') {
 console.log('== 地形 / 物理（共享） ==');
 {
   let hmin = Infinity, hmax = -Infinity;
-  for (let x = -68; x <= 68; x += 2) {
-    for (let z = -68; z <= 68; z += 2) {
+  // 采样范围随地图尺寸自适应（当前 240 → 半宽 120）
+  const SAMPLE = WORLD.half - 4;
+  for (let x = -SAMPLE; x <= SAMPLE; x += 2.5) {
+    for (let z = -SAMPLE; z <= SAMPLE; z += 2.5) {
       const h = heightAt(x, z);
       if (h < hmin) hmin = h;
       if (h > hmax) hmax = h;
@@ -55,7 +59,8 @@ console.log('== 地形 / 物理（共享） ==');
   check('广场平整', Math.abs(heightAt(0, 0)) < 0.05);
   check('地形高度确定性', heightAt(31.37, -42.11) === heightAt(31.37, -42.11));
   check('地表类型合法', ['grass', 'road', 'dirt'].includes(surfaceAt(40, 40)) && surfaceAt(0, 0) === 'dirt');
-  const n = terrainNormal(-52, 54);
+  const HILL0 = WORLD_INFO.hills[0];
+  const n = terrainNormal(HILL0.x, HILL0.z);
   check('山丘法线向上且可步行', n.y > 0.5 && Math.abs(n.x) + Math.abs(n.z) > 0.05);
 
   const b = { x: 0, y: heightAt(0, 0), z: 0, vy: 0, grounded: true, stance: 'stand' };
@@ -82,7 +87,7 @@ console.log('== 地形 / 物理（共享） ==');
   const down = raycastWorld(0, 5, 0, 0, -1, 0, 20);
   check('向下射线命中地形', !!down && down.kind === 'terrain');
   check('向上射线不命中', raycastWorld(0, 2, 0, 0, 1, 0, 20) === null);
-  check('山丘遮挡视线', losBlocked(-30, 2, 30, -52, 2, 54));
+  check('山丘遮挡视线', losBlocked(HILL0.x + HILL0.r + 6, 1.0, HILL0.z, HILL0.x, 1.0, HILL0.z));
   check('开阔地视线通畅', !losBlocked(0, heightAt(0, 0) + 1.64, 0, 10, heightAt(10, 0) + 1.64, 0));
   check('房屋墙体阻挡子弹', (() => {
     const hit = raycastWorld(h0.x, h0.padH + 1.2, h0.z - h0.d / 2 - 3, 0, 0, 1, 20);
@@ -351,10 +356,17 @@ console.log('== 服务器：道具 / 据点 / 比赛 ==');
   const zb2 = zones.find((z) => z.id === 'B');
   check('双方争夺时进度暂停', Math.abs(zb2.capture) < 0.35, `capture=${zb2.capture.toFixed(2)}`);
 
-  // 比赛结束：直接把比分顶到目标值
-  scores.alpha = match.target;
-  for (let i = 0; i < 4; i++) stepOnce(0.05);
-  check('达到目标分数触发比赛结束', match.phase === 'ended' && match.winner === 'alpha', `winner=${match.winner} phase=${match.phase}`);
+  // 比赛结束：拆弹模式按回合比分判定（先赢 roundsToWin 回合）
+  // 这里直接构造回合胜利，验证 endRound → endMatch 的链路
+  match.mode = 'bomb';
+  match.phase = 'playing';
+  const cfg = serverMod.BOMB_CFG || { roundsToWin: 5 };
+  for (let i = 0; i < cfg.roundsToWin; i++) {
+    serverMod.bomb.roundScores.alpha = i;
+    serverMod.endRound('alpha', 'elimination');
+  }
+  check('回合达标触发比赛结束', match.phase === 'ended' && match.winner === 'alpha',
+    `winner=${match.winner} phase=${match.phase} rounds=${cfg.roundsToWin}`);
   players.delete(p.id); players.delete(p2.id);
 }
 
@@ -467,6 +479,8 @@ try {
   check('倒计时剩余时间合理', cd > 0 && cd <= 10, `countdown=${cd}`);
   c1.send({ t: 'debug_start' });
   check('倒计时结束后进入正式比赛', await waitPhase('playing'));
+  // 拆弹模式回合开始有冻结时间（禁止移动/开火），等它过去再测射击
+  await sleep(7000);
   await sleep(300);
   const st = c1.latestState();
   check('state 结构完整', st && Array.isArray(st.players) && Array.isArray(st.items) && Array.isArray(st.zones) &&
@@ -541,13 +555,28 @@ try {
   const zA = c1.latestState().zones.find((z) => z.id === 'A');
   check('debug 占点后据点归属 alpha', zA.owner === 'alpha');
 
-  // 比赛结束
-  // 比赛结束（目标分数来自 shared/world.js 的 MATCH_SCORE_TARGET，当前 420）
-  const scoreTarget = c1.latestState().match.target;
-  c1.send({ t: 'debug_score', team: 'alpha', value: scoreTarget - 1 });
-  const end = await c1.wait('match_end', 5000).catch(() => null);
-  check('比分达标触发 match_end', !!end && end.winner === 'alpha' && !!end.scores,
-    `target=${scoreTarget}`);
+  // 比赛结束：拆弹模式通过回合胜利累积触发 match_end
+  // 每回合 endRound 后有 4s 的 round_end 间隔，因此需要等到下一回合开始再判胜
+  const waitPlaying = async (timeout = 8000) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeout) {
+      const s = c1.latestState();
+      if (s && s.match && s.match.phase === 'playing') return true;
+      await sleep(120);
+    }
+    return false;
+  };
+  let gotEnd = null;
+  for (let i = 0; i < 7; i++) {
+    const s = c1.latestState();
+    if (s && s.match && s.match.phase === 'ended') { gotEnd = s.match; break; }
+    if (s && s.match && s.match.phase !== 'playing') { await waitPlaying(6000); }
+    c1.send({ t: 'debug_round_win', team: 'alpha' });
+    await sleep(300);
+  }
+  const end = await c1.wait('match_end', 8000).catch(() => null);
+  check('回合达标触发 match_end', !!end && end.winner === 'alpha' && !!end.roundScores,
+    end ? `winner=${end.winner} rounds=${JSON.stringify(end.roundScores)}` : 'no match_end');
 
   c2.ws.close();
   const left = await c1.wait('player_left', 4000).catch(() => null);

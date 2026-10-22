@@ -135,6 +135,8 @@ const state = {
   paused: false, dead: false, matchEnd: false, winner: null,
   warmupVisible: false, matchPhase: 'waiting', countdown: 0,
   god: false, godLeft: 0,
+  // 拆弹模式
+  myId: null, credits: 0, bomb: null, buyOpen: false,
   heading: 0,
   minimap: { x: 0, z: 0, yaw: 0, allies: [], enemies: [], zones: [], uav: false },
 };
@@ -1137,7 +1139,7 @@ export const hud = {
   setPlayers(list, selfId) {
     const arr = Array.isArray(list) ? list
       : (list && typeof list === 'object' ? Object.values(list) : []);
-    if (selfId != null) state.selfId = selfId;
+    if (selfId != null) { state.selfId = selfId; state.myId = selfId; }
     state.players = arr;
     const root = node('players');
     if (!root) return;
@@ -1360,6 +1362,88 @@ export const hud = {
     const d = node('matchEnd');
     if (d) d.classList.add('hidden');
     state.matchEnd = false;
+  },
+
+  // ---------- 拆弹模式 HUD ----------
+  /** 回合比分 + 炸弹状态 */
+  setBombHud(info) {
+    const b = info || null;
+    const root = node('bombHud');
+    if (!root) return;
+    if (!b) { root.classList.add('hidden'); return; }
+    root.classList.remove('hidden');
+    setText(node('brsAlpha'), Math.round(num(b.roundScores && b.roundScores.alpha, 0)));
+    setText(node('brsBravo'), Math.round(num(b.roundScores && b.roundScores.bravo, 0)));
+
+    const status = node('bombStatus');
+    const carrier = node('bombCarrier');
+    const st = String(b.state || 'idle');
+    const showStatus = st === 'planted';
+    if (status) {
+      status.classList.toggle('hidden', !showStatus);
+      if (showStatus) {
+        setText(node('bombText'), '炸弹已安放 · ' + (b.site || '') + ' 点');
+        setText(node('bombTimer'), Math.max(0, Math.round(num(b.fuseLeft, 0))));
+      }
+    }
+    // 携带提示：仅自己携带时显示
+    const mine = b.carrierId && state.myId && b.carrierId === state.myId;
+    if (carrier) {
+      carrier.classList.toggle('hidden', !mine);
+      if (mine) carrier.classList.remove('hidden');
+    }
+    state.bomb = b;
+  },
+
+  /** 交互提示（安放/拆除/捡包） */
+  setBombPrompt(text, key) {
+    const el = node('bombPrompt');
+    if (!el) return;
+    if (!text) { el.classList.add('hidden'); return; }
+    el.classList.remove('hidden');
+    setText(node('bombPromptKey'), key || 'E');
+    setText(node('bombPromptText'), text);
+  },
+
+  /** 购买界面 */
+  showBuyMenu(menu, credits, secondsLeft) {
+    const root = node('buyMenu');
+    if (!root) return;
+    root.classList.remove('hidden');
+    setText(node('buyCredits'), '$' + Math.round(num(credits, 0)));
+    setText(node('buyTimer'), Math.max(0, Math.round(num(secondsLeft, 0))) + 's');
+    const list = node('buyList');
+    if (!list) return;
+    const sig = (menu || []).map((m) => m.id + ':' + m.price).join(',') + '|' + Math.round(num(credits, 0));
+    if (list.dataset.sig !== sig) {
+      list.dataset.sig = sig;
+      list.innerHTML = '';
+      (menu || []).forEach((item, i) => {
+        const el = document.createElement('div');
+        const cant = num(credits, 0) < num(item.price, 0);
+        el.className = 'buy-item' + (cant ? ' cant' : '');
+        el.dataset.weapon = item.id;
+        el.innerHTML =
+          '<span class="bi-key">' + (i + 1) + '</span>' +
+          '<span class="bi-body"><span class="bi-name">' + esc(item.name || item.id) + '</span>' +
+          '<span class="bi-note">' + esc(item.note || '') + '</span></span>' +
+          '<span class="bi-price">' + (item.price ? '$' + item.price : '免费') + '</span>';
+        list.appendChild(el);
+      });
+    }
+    state.buyOpen = true;
+  },
+  hideBuyMenu() {
+    const root = node('buyMenu');
+    if (root) root.classList.add('hidden');
+    state.buyOpen = false;
+  },
+  updateBuyCredits(credits, secondsLeft) {
+    setText(node('buyCredits'), '$' + Math.round(num(credits, 0)));
+    setText(node('buyTimer'), Math.max(0, Math.round(num(secondsLeft, 0))) + 's');
+  },
+  setCredits(n) {
+    state.credits = Math.round(num(n, 0));
   },
 
   // ---------- 小地图 / 罗盘 ----------

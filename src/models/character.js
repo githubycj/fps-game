@@ -11,6 +11,9 @@
 
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+// 布娃娃：轻量刚体 + 距离约束求解器（见 src/ragdoll.js）。
+// groundHeightAt 由 ragdoll.js 从 shared/world.js 转出，避免模型层再单独 import 世界数据。
+import { createRagdoll, groundHeightAt } from '../ragdoll.js';
 
 // ---------------------------------------------------------------------------
 // 尺寸常量（单位 m）
@@ -752,6 +755,172 @@ export function createCharacter(opts = {}) {
   }
 
   // ------------------------------------------------------------------
+  // 布娃娃（任务 A）：暴露骨骼部件 + enterRagdoll/exitRagdoll
+  // 设计要点：
+  //   * 进入布娃娃前把整棵关节树「拍平」到 root（保留世界变换），这样所有部件共享同一个父节点，
+  //     物理求解器可以直接用 inv(root.matrixWorld) 把世界姿态写回局部变换；
+  //   * waist/neck/wrist/ankle 不是物理部件，拍平后再挂回父部件（保持世界变换），让它们跟着肢体动；
+  //   * ragdollActive 为 true 时 update() 完全跳过 IK/步态/死亡侧倒动画，避免与物理打架。
+  // ------------------------------------------------------------------
+  const RAGDOLL_PARTS = [
+    { name: 'head', joint: 'head', half: [0.105, 0.125, 0.115], mass: 4, offset: [0, 0.085, 0.005] },
+    { name: 'torso', joint: 'chest', half: [0.185, 0.195, 0.13], mass: 20, offset: [0, 0.10, 0.03] },
+    { name: 'hips', joint: 'hips', half: [0.155, 0.105, 0.115], mass: 14, offset: [0, -0.015, 0] },
+    { name: 'upperArmL', joint: 'shoulderL', half: [0.062, 0.15, 0.062], mass: 2.5, offset: [0, -0.15, 0] },
+    { name: 'upperArmR', joint: 'shoulderR', half: [0.062, 0.15, 0.062], mass: 2.5, offset: [0, -0.15, 0] },
+    { name: 'foreArmL', joint: 'elbowL', half: [0.05, 0.15, 0.05], mass: 1.8, offset: [0, -0.145, 0] },
+    { name: 'foreArmR', joint: 'elbowR', half: [0.05, 0.15, 0.05], mass: 1.8, offset: [0, -0.145, 0] },
+    { name: 'thighL', joint: 'thighL', half: [0.085, 0.235, 0.085], mass: 7, offset: [0, -0.235, 0] },
+    { name: 'thighR', joint: 'thighR', half: [0.085, 0.235, 0.085], mass: 7, offset: [0, -0.235, 0] },
+    { name: 'shinL', joint: 'kneeL', half: [0.07, 0.215, 0.07], mass: 4, offset: [0, -0.215, 0] },
+    { name: 'shinR', joint: 'kneeR', half: [0.07, 0.215, 0.07], mass: 4, offset: [0, -0.215, 0] },
+  ];
+
+  // 对外暴露的部件表（obj 的 position/quaternion 由物理直接读写）
+  const ragdollParts = [];
+  for (const def of RAGDOLL_PARTS) {
+    const obj = joints[def.joint];
+    if (!obj) continue;
+    ragdollParts.push({
+      name: def.name,
+      obj,
+      halfExtents: def.half.slice(),
+      mass: def.mass,
+      offset: def.offset.slice(),
+    });
+  }
+
+  // 记录每个关节的原始父节点与本地变换，退出布娃娃时原样还原
+  const jointHome = [];
+  for (const name in joints) {
+    const j = joints[name];
+    jointHome.push({
+      joint: j,
+      parent: j.parent,
+      pos: j.position.clone(),
+      quat: j.quaternion.clone(),
+      scale: j.scale.clone(),
+    });
+  }
+
+  // 非物理部件 -> 跟随的物理部件（拍平后再挂回去，保证脚/手/颈/腰跟着肢体动）
+  const FOLLOW_PARENTS = [
+    ['waist', 'hips'],
+    ['neck', 'chest'],
+    ['ankleL', 'kneeL'],
+    ['ankleR', 'kneeR'],
+    ['wristL', 'elbowL'],
+    ['wristR', 'elbowR'],
+  ];
+
+  let ragdoll = null;
+  let ragdollActive = false;
+
+  // 把整棵关节树拍平到 root（three 的 attach 会保持世界变换）
+  function flattenJoints() {
+    root.updateMatrixWorld(true);
+    // 由深到浅处理：先搬叶子，再搬父节点，避免中途改变父节点导致世界变换错乱
+    for (let i = jointHome.length - 1; i >= 0; i--) {
+      const j = jointHome[i].joint;
+      if (j.parent !== root) root.attach(j);
+    }
+    // 把非物理关节挂回对应肢体
+    for (const entry of FOLLOW_PARENTS) {
+      const child = joints[entry[0]];
+      const parent = joints[entry[1]];
+      if (child && parent && child.parent !== parent) parent.attach(child);
+    }
+  }
+
+  // 还原原始关节层级与本地变换
+  function restoreJoints() {
+    for (const home of jointHome) {
+      const j = home.joint;
+      if (j.parent !== home.parent) home.parent.add(j);
+      j.position.copy(home.pos);
+      j.quaternion.copy(home.quat);
+      j.scale.copy(home.scale);
+    }
+  }
+
+  // 武器掉落：侧躺在身体旁边的地面上
+  const _dropV = new THREE.Vector3();
+  function dropWeapon() {
+    if (!weaponNode) {
+      weaponParent.visible = false;
+      return;
+    }
+    weaponParent.visible = true;
+    hips.getWorldPosition(_dropV);
+    _dropV.x += deathDir * 0.42;
+    _dropV.z -= 0.36;
+    const gy = groundHeightAt(_dropV.x, _dropV.z);
+    root.worldToLocal(_dropV);
+    weaponParent.position.set(_dropV.x, gy - root.position.y + 0.04, _dropV.z);
+    // 枪身本来就是沿 -Z 的水平方向，绕 Z 轴转 90° 即「侧躺在地上」
+    weaponParent.rotation.set(0, Math.random() * Math.PI * 2, Math.PI * 0.5);
+    if (weaponNode) weaponNode.rotation.set(0, 0, 0);
+  }
+
+  /**
+   * 进入布娃娃：传入冲击方向与强度（子弹前进方向 + 伤害量）。
+   * @param {THREE.Vector3|{x:number,y:number,z:number}} impulseDir
+   * @param {number} impulseStrength 0~14
+   */
+  function enterRagdoll(impulseDir, impulseStrength) {
+    if (disposed || ragdollActive) return false;
+    if (ragdollParts.length === 0) return false;
+    // 先把姿态复位成站立（如果之前播过侧倒动画，避免把侧倒姿态带进物理）
+    resetDeathPose();
+    deathT = 1;
+    flattenJoints();
+    if (!ragdoll) {
+      ragdoll = createRagdoll(ragdollParts, { anchor: root });
+    }
+    ragdollActive = true;
+    ragdoll.start(impulseDir, impulseStrength);
+    dropWeapon();
+    return true;
+  }
+
+  /** 退出布娃娃（重生）：还原骨骼层级与武器挂点 */
+  function exitRagdoll() {
+    if (!ragdollActive) return false;
+    ragdollActive = false;
+    if (ragdoll) ragdoll.stop();
+    restoreJoints();
+    deathT = 0;
+    resetDeathPose();
+    weaponParent.visible = true;
+    weaponParent.rotation.set(0, 0, 0);
+    weaponParent.position.set(0.09, 1.305, -0.18);
+    weaponPos.set(0.09, 1.305, -0.18);
+    // 双脚实例矩阵恢复站立位置
+    _footMat.makeTranslation(-FOOT_X, ANKLE_Y, 0);
+    feet.setMatrixAt(0, _footMat);
+    _footMat.makeTranslation(FOOT_X, ANKLE_Y, 0);
+    feet.setMatrixAt(1, _footMat);
+    feet.instanceMatrix.needsUpdate = true;
+    return true;
+  }
+
+  // 布娃娃每帧：物理推进 -> 世界矩阵刷新 -> 双脚实例矩阵跟随
+  function updateRagdoll(dt) {
+    if (!ragdoll) return;
+    ragdoll.step(dt);
+    root.updateMatrixWorld(true);
+    _rootInv.copy(root.matrixWorld).invert();
+    for (const leg of legs) {
+      leg.ankle.getWorldPosition(_footPos);
+      leg.ankle.getWorldQuaternion(_footQuat);
+      _footMat.compose(_footPos, _footQuat, ONE);
+      _instMat.copy(_rootInv).multiply(_footMat);
+      feet.setMatrixAt(leg.instIndex, _instMat);
+    }
+    feet.instanceMatrix.needsUpdate = true;
+  }
+
+  // ------------------------------------------------------------------
   // 每帧更新
   // ------------------------------------------------------------------
   function update(nextState, dt) {
@@ -764,6 +933,12 @@ export function createCharacter(opts = {}) {
     }
     const d = Math.min(Math.max(dt || 0, 0), 0.05); // dt 钳制，避免切页后跳变
     time += d;
+
+    // ---- 布娃娃状态：完全跳过下面的 IK/步态/死亡侧倒动画（不和物理打架）----
+    if (ragdollActive) {
+      updateRagdoll(d);
+      return;
+    }
 
     const speed = clamp(Number(state.speed) || 0, 0, 14);
     const pitch = clamp(Number(state.pitch) || 0, -1.5, 1.5);
@@ -1031,6 +1206,11 @@ export function createCharacter(opts = {}) {
   function dispose() {
     if (disposed) return;
     disposed = true;
+    if (ragdoll) {
+      ragdoll.dispose();
+      ragdoll = null;
+    }
+    ragdollActive = false;
     if (weaponNode && weaponNode.parent) weaponNode.parent.remove(weaponNode);
     weaponNode = null;
     if (root.parent) root.parent.remove(root);
@@ -1052,6 +1232,17 @@ export function createCharacter(opts = {}) {
     weaponParent,
     state,
     maxDrawCalls: MAX_DRAW_CALLS,
+    // ---- 布娃娃（任务 A）----
+    ragdollParts,
+    enterRagdoll,
+    exitRagdoll,
+    get ragdollActive() {
+      return ragdollActive;
+    },
+    // 当前布娃娃是否已完全静止（供调用方停掉每帧 update 或回收）
+    get ragdollSettled() {
+      return !ragdoll || ragdoll.isSettled;
+    },
   };
 }
 

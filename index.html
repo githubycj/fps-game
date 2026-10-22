@@ -115,7 +115,38 @@
       </div>
 
       <div id="zoneBar"></div>
+
+      <!-- 拆弹模式：回合比分 / 炸弹状态 -->
+      <div id="bombHud" class="hidden">
+        <div id="bombRoundScores">
+          <span class="brs alpha"><i></i><b id="brsAlpha">0</b></span>
+          <span class="brs-sep">:</span>
+          <span class="brs bravo"><b id="brsBravo">0</b><i></i></span>
+        </div>
+        <div id="bombStatus" class="hidden">
+          <span id="bombIcon">◉</span>
+          <span id="bombText">炸弹已安放</span>
+          <span id="bombTimer" class="mono">40</span>
+        </div>
+        <div id="bombCarrier" class="hidden">你携带炸弹 · 前往 A / B 点按 <b>E</b> 安放</div>
+      </div>
     </div>
+
+    <!-- 购买界面（B 键；仅拆弹模式回合开始窗口内可用） -->
+    <div id="buyMenu" class="overlay hidden">
+      <div class="card buy-card">
+        <div class="buy-head">
+          <span class="card-kicker">EQUIPMENT</span>
+          <span id="buyCredits" class="mono">$800</span>
+          <span id="buyTimer" class="mono">20s</span>
+        </div>
+        <div id="buyList"></div>
+        <div class="card-sub">按 <b>B</b> 关闭 · 点击或按数字键购买 · 回合开始 20 秒内可购买</div>
+      </div>
+    </div>
+
+    <!-- 交互提示（安放/拆除/捡包） -->
+    <div id="bombPrompt" class="hidden"><b id="bombPromptKey">E</b><span id="bombPromptText">安放炸弹</span></div>
 
     <div id="toasts"></div>
 

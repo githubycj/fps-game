@@ -6,8 +6,9 @@
 // 玩家位置 (x, y, z) 中 y 为脚底高度。
 
 export const WORLD = {
-  size: 140,
-  half: 70,
+  // 地图从 140×140 扩大到 240×240（半宽 120），配合拆弹模式的 A/B 双点位布局
+  size: 240,
+  half: 120,
   maxPlayers: 8,
 
   // 玩家碰撞
@@ -68,8 +69,10 @@ export const SUN = {
   hemiGround: 0x8a7c5c,
   hemiIntensity: 1.0,
   fogColor: 0xc9d6e2,
-  fogNear: 55,
-  fogFar: 210,
+  // 地图扩大到 240 后，雾距离同步拉远，否则 120m 外全是雾、远山完全看不见。
+  // 210 → 620：中近景清晰，远景（1500m 外的雪山）保留薄雾纵深而不被吃掉。
+  fogNear: 120,
+  fogFar: 620,
   exposure: 1.0,
 };
 
@@ -80,6 +83,49 @@ export const MATCH_SCORE_TARGET = 420;  // 先到分数获胜
 export const MATCH_TIME_LIMIT = 600;    // 秒
 export const UAV_KILLSTREAK = 5;        // 5 连杀触发
 export const UAV_DURATION = 10;         // 秒
+
+// ============================================================
+// 拆弹模式（Search & Destroy / Defuse）
+// 规则：
+//   · 进攻方 alpha 携带炸弹，需在 A 或 B 点安放并引爆
+//   · 防守方 bravo 阻止安放，或在安放后拆除炸弹
+//   · 回合制：先赢 N 回合者获胜；每回合结束后双方重生、炸弹重置
+// ============================================================
+export const BOMB = {
+  // 回合与经济
+  roundsToWin: 5,          // 先赢 5 回合
+  roundTime: 105,          // 回合时长（秒），安放前
+  freezeTime: 6,           // 回合开始冻结时间（秒，不可移动）
+  plantTime: 3.2,          // 安放耗时（秒）
+  defuseTime: 5.0,         // 拆除耗时（秒，无拆除器）
+  defuseTimeKit: 2.5,      // 有拆除器
+  fuseTime: 40,            // 安放后爆炸倒计时（秒）
+  plantRadius: 3.2,        // 必须在包点半径内安放
+  defuseRadius: 2.2,       // 拆除距离
+  // 购买系统（回合开始时购买，武器箱已移除）
+  buyTime: 20,             // 购买窗口（秒）
+  startCredits: 800,       // 首回合资金
+  maxCredits: 9000,        // 资金上限
+  winCredits: 3000,        // 获胜奖励
+  lossCredits: 1900,       // 失败奖励
+  killCredits: 300,        // 击杀奖励
+  plantCredits: 300,       // 安放奖励
+  defuseCredits: 300,      // 拆除奖励
+  // 炸弹点位（与 ZONES 的 A/B 对应）
+  sites: ['A', 'B'],
+};
+
+// 可购买武器（价格；手枪默认免费携带）
+export const BUY_MENU = [
+  { id: 'pistol', name: '手枪', price: 0, note: '默认携带' },
+  { id: 'deagle', name: '沙漠之鹰', price: 700, note: '.50 大口径，2 枪躯干' },
+  { id: 'smg', name: '冲锋枪', price: 1250, note: '近身泼水，射速最快' },
+  { id: 'm416', name: 'M416', price: 2900, note: 'AR 平台，后坐稳易压枪' },
+  { id: 'ak47', name: '突击步枪', price: 2700, note: '单发更痛，后坐大' },
+  { id: 'shotgun', name: '霰弹枪', price: 1100, note: '12m 内一击必杀' },
+  { id: 'sniper', name: '狙击枪', price: 4750, note: '穿甲弹，爆头必杀' },
+];
+
 
 // AI 基础配置（server/ai.js 可覆盖细节）
 // 难度取向：接近"普通玩家"——反应慢、瞄准误差大、点射之间有停顿，不做神枪手。
@@ -156,12 +202,17 @@ export function mulberry32(seed) {
 
 // 山丘：高斯隆起（sigma = r * 0.6），保证整体坡度可步行
 const HILLS = [
-  { x: -52, z: 54, r: 30, h: 7.5 },
-  { x: 56, z: -50, r: 26, h: 6.5 },
-  { x: -58, z: -44, r: 24, h: 4.2 },
-  { x: 48, z: 48, r: 20, h: 3.2 },
-  { x: -8, z: -58, r: 28, h: 3.0 },
-  { x: 8, z: 56, r: 22, h: 2.4 },
+  // 地图扩大到 240 后重新分布：四角高丘 + 中部起伏，保证 120m 半径内有地形变化
+  { x: -88, z: 92, r: 34, h: 9.5 },
+  { x: 96, z: -86, r: 30, h: 8.2 },
+  { x: -98, z: -76, r: 28, h: 5.6 },
+  { x: 82, z: 82, r: 24, h: 4.4 },
+  { x: -14, z: -98, r: 32, h: 4.0 },
+  { x: 14, z: 96, r: 26, h: 3.4 },
+  // 中部点缀（避免大地图中央过于平坦）
+  { x: -58, z: 18, r: 18, h: 2.2 },
+  { x: 62, z: 22, r: 16, h: 1.9 },
+  { x: 6, z: -46, r: 20, h: 2.6 },
 ];
 
 function rawHeight(x, z) {
@@ -176,9 +227,9 @@ function rawHeight(x, z) {
     const s2 = hill.r * hill.r * 0.36;
     h += hill.h * Math.exp(-d2 / (2 * s2));
   }
-  // 地图边缘缓坡抬升，视觉上收住边界
+  // 地图边缘缓坡抬升，视觉上收住边界（随地图尺寸调整）
   const edge = Math.max(Math.abs(x), Math.abs(z));
-  h += 3.2 * smoothstep(56, 68, edge);
+  h += 3.6 * smoothstep(WORLD.half - 14, WORLD.half - 2, edge);
   return h;
 }
 
@@ -189,71 +240,84 @@ function rawHeight(x, z) {
 // 房子：可进入的墙板房。doorSide 指向道路/广场一侧。
 // padH 在下方由 rawHeight 计算并补齐。
 export const HOUSES = [
-  { id: 'H1', x: -38, z: -26, w: 12, d: 9, wallH: 3.2, roofH: 2.6, doorSide: 'south', doorW: 1.6, doorH: 2.15, style: 'white', color: 0xd8d2c4 },
-  { id: 'H2', x: 38, z: -30, w: 10, d: 8, wallH: 3.0, roofH: 2.3, doorSide: 'south', doorW: 1.5, doorH: 2.1, style: 'blue', color: 0xb9c6cf },
-  { id: 'H3', x: -40, z: 30, w: 13, d: 9, wallH: 3.4, roofH: 2.8, doorSide: 'north', doorW: 1.6, doorH: 2.2, style: 'red', color: 0xc4a58f },
-  { id: 'H4', x: 36, z: 32, w: 10, d: 8, wallH: 3.0, roofH: 2.4, doorSide: 'north', doorW: 1.5, doorH: 2.1, style: 'grey', color: 0xccc7ba },
-  { id: 'BARN', x: 2, z: -52, w: 16, d: 11, wallH: 4.2, roofH: 3.4, doorSide: 'south', doorW: 3.2, doorH: 3.4, style: 'barn', color: 0x9a6b4f },
-  { id: 'SHED', x: -14, z: 48, w: 6, d: 5, wallH: 2.4, roofH: 1.8, doorSide: 'south', doorW: 1.3, doorH: 1.95, style: 'shed', color: 0xa8a08c },
+  // 地图 240×240：房屋分散在四个象限，中间留出广场与拆弹点位
+  { id: 'H1', x: -58, z: -46, w: 12, d: 9, wallH: 3.2, roofH: 2.6, doorSide: 'south', doorW: 1.6, doorH: 2.15, style: 'white', color: 0xd8d2c4 },
+  { id: 'H2', x: 58, z: -50, w: 10, d: 8, wallH: 3.0, roofH: 2.3, doorSide: 'south', doorW: 1.5, doorH: 2.1, style: 'blue', color: 0xb9c6cf },
+  { id: 'H3', x: -60, z: 50, w: 13, d: 9, wallH: 3.4, roofH: 2.8, doorSide: 'north', doorW: 1.6, doorH: 2.2, style: 'red', color: 0xc4a58f },
+  { id: 'H4', x: 56, z: 52, w: 10, d: 8, wallH: 3.0, roofH: 2.4, doorSide: 'north', doorW: 1.5, doorH: 2.1, style: 'grey', color: 0xccc7ba },
+  { id: 'BARN', x: 2, z: -88, w: 16, d: 11, wallH: 4.2, roofH: 3.4, doorSide: 'south', doorW: 3.2, doorH: 3.4, style: 'barn', color: 0x9a6b4f },
+  { id: 'SHED', x: -22, z: 84, w: 6, d: 5, wallH: 2.4, roofH: 1.8, doorSide: 'south', doorW: 1.3, doorH: 2.05, style: 'shed', color: 0xa8a08c },
+  // 拆弹模式点位附近的掩体建筑（放在包点半径 11m 之外，避免遮挡包点核心区）
+  { id: 'HA', x: -98, z: 30, w: 9, d: 7, wallH: 3.0, roofH: 2.2, doorSide: 'east', doorW: 1.4, doorH: 2.05, style: 'grey', color: 0xc2bdae },
+  { id: 'HB', x: 98, z: -30, w: 9, d: 7, wallH: 3.0, roofH: 2.2, doorSide: 'west', doorW: 1.4, doorH: 2.05, style: 'white', color: 0xd4cec0 },
 ];
 
 // 大型输电塔（26m 桁架塔 + 塔间悬链电缆，由 env 建模）
 // 位置刻意远离房屋平整垫，避免两套 pad 相互干扰导致墙底/塔基悬空。
 export const PYLONS = [
-  { x: -24, z: 26, rot: 0.35, h: 26, id: 'P1' },
-  { x: 26, z: -14, rot: -0.35, h: 26, id: 'P2' },
+  { x: -40, z: 44, rot: 0.35, h: 26, id: 'P1' },
+  { x: 44, z: -24, rot: -0.35, h: 26, id: 'P2' },
 ];
 
 // 废弃车辆（掩体）
 export const CARS = [
-  { x: -22, z: 6, rot: 0, color: 0x6f7b78, id: 'CAR1' },
-  { x: 24, z: -6, rot: Math.PI / 2, color: 0x7a5b4a, id: 'CAR2' },
+  { x: -36, z: 10, rot: 0, color: 0x6f7b78, id: 'CAR1' },
+  { x: 40, z: -10, rot: Math.PI / 2, color: 0x7a5b4a, id: 'CAR2' },
+  { x: 6, z: 30, rot: 0.6, color: 0x5d6b72, id: 'CAR3' },
 ];
 
 // 低矮工事/沙袋墙（据点附近掩体，0.95m：站立可越、蹲下可掩护）
 export const DEFENSES = [
-  { x: -34, z: 13.5, w: 4.4, d: 0.8, h: 0.95, rot: 0, kind: 'sandbag' },
-  { x: -40.5, z: 6, w: 0.8, d: 4.4, h: 0.95, rot: 0, kind: 'concrete' },
-  { x: 34, z: 13.5, w: 4.4, d: 0.8, h: 0.95, rot: 0, kind: 'sandbag' },
-  { x: 40.5, z: 6, w: 0.8, d: 4.4, h: 0.95, rot: 0, kind: 'concrete' },
-  { x: 0, z: -8.5, w: 5.0, d: 0.8, h: 0.95, rot: 0, kind: 'concrete' },
-  { x: 0, z: 8.5, w: 5.0, d: 0.8, h: 0.95, rot: 0, kind: 'sandbag' },
+  // 拆弹 A 点（西）
+  { x: -66, z: 22, w: 5.0, d: 0.8, h: 0.95, rot: 0, kind: 'sandbag' },
+  { x: -66, z: -6, w: 5.0, d: 0.8, h: 0.95, rot: 0, kind: 'concrete' },
+  { x: -86, z: 8, w: 0.8, d: 5.0, h: 0.95, rot: 0, kind: 'sandbag' },
+  // 拆弹 B 点（东）
+  { x: 66, z: 6, w: 5.0, d: 0.8, h: 0.95, rot: 0, kind: 'concrete' },
+  { x: 66, z: -22, w: 5.0, d: 0.8, h: 0.95, rot: 0, kind: 'sandbag' },
+  { x: 86, z: -8, w: 0.8, d: 5.0, h: 0.95, rot: 0, kind: 'sandbag' },
+  // 中央广场掩体
+  { x: 0, z: -14, w: 6.0, d: 0.8, h: 0.95, rot: 0, kind: 'concrete' },
+  { x: 0, z: 14, w: 6.0, d: 0.8, h: 0.95, rot: 0, kind: 'sandbag' },
+  { x: -16, z: 0, w: 0.8, d: 6.0, h: 0.95, rot: 0, kind: 'sandbag' },
+  { x: 16, z: 0, w: 0.8, d: 6.0, h: 0.95, rot: 0, kind: 'concrete' },
 ];
 
 // 木栅栏（仅轴对齐；自动生成 1.05m 高碰撞体）
 export const FENCES = [
   // H1 前院（门朝 +Z）
-  { x1: -46, z1: -18.5, x2: -39.2, z2: -18.5, h: 1.05 },
-  { x1: -36.8, z1: -18.5, x2: -30, z2: -18.5, h: 1.05 },
+  { x1: -68, z1: -36, x2: -61.2, z2: -36, h: 1.05 },
+  { x1: -58.8, z1: -36, x2: -52, z2: -36, h: 1.05 },
   // H2 前院
-  { x1: 32, z1: -23, x2: 37.2, z2: -23, h: 1.05 },
-  { x1: 38.8, z1: -23, x2: 44, z2: -23, h: 1.05 },
+  { x1: 52, z1: -41, x2: 57.2, z2: -41, h: 1.05 },
+  { x1: 58.8, z1: -41, x2: 64, z2: -41, h: 1.05 },
   // H3 前院（门朝 -Z）
-  { x1: -48, z1: 22.5, x2: -41.2, z2: 22.5, h: 1.05 },
-  { x1: -38.8, z1: 22.5, x2: -32, z2: 22.5, h: 1.05 },
+  { x1: -70, z1: 40, x2: -63.2, z2: 40, h: 1.05 },
+  { x1: -60.8, z1: 40, x2: -54, z2: 40, h: 1.05 },
   // H4 前院
-  { x1: 30, z1: 25, x2: 35.2, z2: 25, h: 1.05 },
-  { x1: 36.8, z1: 25, x2: 42, z2: 25, h: 1.05 },
+  { x1: 50, z1: 43, x2: 55.2, z2: 43, h: 1.05 },
+  { x1: 56.8, z1: 43, x2: 62, z2: 43, h: 1.05 },
   // 谷仓侧栏
-  { x1: -6, z1: -44.5, x2: -6, z2: -35, h: 1.15 },
-  { x1: 10, z1: -44.5, x2: 10, z2: -35, h: 1.15 },
+  { x1: -6, z1: -80, x2: -6, z2: -70, h: 1.15 },
+  { x1: 10, z1: -80, x2: 10, z2: -70, h: 1.15 },
   // 路边草场围栏
-  { x1: -60, z1: -10, x2: -48, z2: -10, h: 1.05 },
-  { x1: 48, z1: 10, x2: 60, z2: 10, h: 1.05 },
+  { x1: -100, z1: -18, x2: -84, z2: -18, h: 1.05 },
+  { x1: 84, z1: 18, x2: 100, z2: 18, h: 1.05 },
 ];
 
 // 道路（泥土路 + 中央碎石广场）
 export const ROADS = {
-  mainWidth: 8,     // 南北向，沿 x=0
-  crossWidth: 7,    // 东西向，沿 z=0
-  plazaRadius: 13,  // 中央广场
+  mainWidth: 9,     // 南北向，沿 x=0
+  crossWidth: 8,    // 东西向，沿 z=0
+  plazaRadius: 15,  // 中央广场
 };
 
-// 据点
+// 据点（拆弹模式用 A/B 两个包点，Domination 用三点）
 export const ZONES = [
-  { id: 'A', name: '西村', x: -34, z: 6, r: 9 },
-  { id: 'B', name: '中央广场', x: 0, z: 0, r: 10 },
-  { id: 'C', name: '东站', x: 34, z: 6, r: 9 },
+  { id: 'A', name: 'A 包点', x: -76, z: 8, r: 11 },
+  { id: 'B', name: 'B 包点', x: 76, z: -8, r: 11 },
+  { id: 'C', name: '中央广场', x: 0, z: 0, r: 12 },
+
 ];
 
 // ============================================================
@@ -365,13 +429,14 @@ function onRoad(x, z, margin = 6) {
 
 // 出生点必须提前定义：生成树木/石堆时要主动避开，避免出生即卡在碰撞体里
 export const SPAWNS = {
+  // 拆弹模式：进攻方(alpha) 从南侧推进，防守方(bravo) 在北侧
   alpha: [
-    { x: 0, z: 52 }, { x: -7, z: 56 }, { x: 7, z: 56 }, { x: 0, z: 60 },
-    { x: -12, z: 58 }, { x: 12, z: 58 }, { x: 18, z: 52 }, { x: -18, z: 52 },
+    { x: 0, z: 96 }, { x: -8, z: 100 }, { x: 8, z: 100 }, { x: 0, z: 104 },
+    { x: -16, z: 98 }, { x: 16, z: 98 }, { x: 24, z: 92 }, { x: -24, z: 92 },
   ],
   bravo: [
-    { x: 24, z: -52 }, { x: -24, z: -52 }, { x: 30, z: -58 }, { x: -30, z: -58 },
-    { x: 20, z: -60 }, { x: -20, z: -60 }, { x: 34, z: -46 }, { x: -34, z: -46 },
+    { x: 0, z: -96 }, { x: -8, z: -100 }, { x: 8, z: -100 }, { x: 0, z: -104 },
+    { x: -16, z: -98 }, { x: 16, z: -98 }, { x: 24, z: -92 }, { x: -24, z: -92 },
   ],
 };
 SPAWNS.all = [...SPAWNS.alpha, ...SPAWNS.bravo];
@@ -387,19 +452,20 @@ export const TREES = [];
 {
   const rand = treeRand;
   let guard = 0;
-  while (TREES.length < 72 && guard++ < 3000) {
-    const x = (rand() * 2 - 1) * 66;
-    const z = (rand() * 2 - 1) * 66;
-    if (onRoad(x, z, 4)) continue;
-    if (distToHouse(x, z, 2) !== 999) continue;
-    if (distToZones(x, z, 3) < 1) continue;
-    if (distToPylons(x, z, 4) < 1) continue;
+  // 地图扩大到 240 后树木数量同步增加（保持密度）
+  while (TREES.length < 190 && guard++ < 12000) {
+    const x = (rand() * 2 - 1) * 112;
+    const z = (rand() * 2 - 1) * 112;
+    if (onRoad(x, z, 5)) continue;
+    if (distToHouse(x, z, 3) !== 999) continue;
+    if (distToZones(x, z, 4) < 1) continue;
+    if (distToPylons(x, z, 5) < 1) continue;
     // 出生区留空
-    if (Math.abs(x) < 16 && Math.abs(Math.abs(z) - 55) < 16) continue;
-    if (nearSpawn(x, z, 3.5)) continue;
+    if (Math.abs(x) < 26 && Math.abs(z) > 78) continue;
+    if (nearSpawn(x, z, 4)) continue;
     let tooClose = false;
     for (const t of TREES) {
-      if ((t.x - x) ** 2 + (t.z - z) ** 2 < 20) { tooClose = true; break; }
+      if ((t.x - x) ** 2 + (t.z - z) ** 2 < 22) { tooClose = true; break; }
     }
     if (tooClose) continue;
     const r = rand();
@@ -448,70 +514,253 @@ export const BOUNDARY = [
   { x: (WORLD.half - 2), z: 0, w: 1.2, d: WORLD.size, y0: -30, y1: 40, kind: 'boundary', material: 'metal' },
 ];
 
-// 生成房屋墙体碰撞（含门洞与门楣），视觉建模必须使用同一份数据
+// ============================================================
+// 房屋开口（门洞 / 无玻璃窗洞）与家具：客户端建模与服务器碰撞共用同一份确定性数据
+// ============================================================
+
+// 窗户规格（无玻璃）：窗台离室内地面约 1.0m，洞口净高 1.2m、净宽 1.0~1.4m。
+// 洞口本身就是碰撞缺口：墙段在洞口处被切开（窗下墙 + 窗上过梁 + 两侧墙垛），
+// 所以子弹 / 视线可以真的从窗口穿过去；而窗台高 1.0m，玩家走不进去。
+export const WINDOW_SPEC = {
+  sill: 1.0,        // 窗台（洞口下沿）离室内地面高度
+  h: 1.2,           // 洞口净高
+  wMin: 1.16,       // 洞口净宽下限
+  wMax: 1.36,       // 洞口净宽上限（含窗框贴脸仍 < 1.4m）
+  edge: 0.6,        // 洞口距墙角的最小墙垛宽度
+  longWall: 11,     // 超过该长度且房屋较大时可开 2 个窗
+};
+
+// 房屋四面墙的墙线（南北墙沿 X、东西墙沿 Z，与视觉墙板同源）
+export function houseSides(h) {
+  const t = 0.34;
+  return [
+    { name: 'north', axis: 'x', len: h.w + t, cx: h.x, cz: h.z - h.d / 2, dirX: 0, dirZ: -1 },
+    { name: 'south', axis: 'x', len: h.w + t, cx: h.x, cz: h.z + h.d / 2, dirX: 0, dirZ: 1 },
+    { name: 'west', axis: 'z', len: h.d + t, cx: h.x - h.w / 2, cz: h.z, dirX: -1, dirZ: 0 },
+    { name: 'east', axis: 'z', len: h.d + t, cx: h.x + h.w / 2, cz: h.z, dirX: 1, dirZ: 0 },
+  ];
+}
+
+// 室内地面顶面（视觉地板：中心 padH+0.02、厚 0.05 → 顶面 padH+0.045）
+export function houseFloorTop(h) { return h.padH + 0.045; }
+
+// 确定性字符串种子（FNV-1a）：窗户 / 家具布局禁止 Math.random
+export function seedOf(str) {
+  let s = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) { s ^= str.charCodeAt(i); s = Math.imul(s, 0x01000193); }
+  return s >>> 0;
+}
+
+// 单面墙上的窗洞（u = 沿墙方向、相对墙中心的坐标）
+// 注：洞口刻意避开墙正中线（保留 ≥0.35m 实墙），保证穿过房屋中心的对角线
+// 仍然被墙体遮挡；窗户本身仍位于墙面水平中段、竖向偏上。
+function wallWindows(h, s) {
+  const spec = WINDOW_SPEC;
+  const rand = mulberry32(seedOf(h.id + ':win:' + s.name));
+  const half = s.len / 2;
+  const usable = s.len - spec.edge * 2;
+  if (usable < spec.wMin + 0.2) return [];
+  const n = (h.w * h.d >= 150 && s.len >= spec.longWall) ? 2 : 1;
+  const out = [];
+  if (n === 1) {
+    // 单窗：偏向一侧（确定性），内侧边距墙中线 ≥0.35m，外侧不越过墙角墙垛
+    const w = Math.min(spec.wMax, spec.wMin + rand() * (spec.wMax - spec.wMin), usable - 0.7);
+    const maxU = half - spec.edge - w / 2;     // 洞口外沿贴住墙角墙垛
+    const minU = 0.35 + w / 2;                 // 避开墙正中线
+    const sign = rand() < 0.5 ? -1 : 1;
+    const u = sign * (maxU > minU ? minU + rand() * (maxU - minU) : Math.max(0, maxU));
+    out.push({ u0: u - w / 2, u1: u + w / 2, w });
+    return out;
+  }
+  // 双窗：左右对称布置在中段，窗间保留窗间墙
+  const gap = 0.5 + rand() * 0.3;                 // 中线两侧实墙半宽
+  const maxW = (usable / 2 - gap) * 0.92;
+  const w = Math.max(spec.wMin * 0.95, Math.min(spec.wMax, maxW));
+  for (const sign of [-1, 1]) {
+    const u = sign * (gap + w / 2);
+    out.push({ u0: u - w / 2, u1: u + w / 2, w });
+  }
+  return out;
+}
+
+// 生成房屋墙体碰撞（含门洞 / 无玻璃窗洞），视觉建模必须使用同一份数据。
+// 返回：segments=实墙 AABB 段、windows=窗洞元数据、door=门洞元数据。
 export function houseWallSegments(h) {
   const t = 0.34;
   const y0 = h.padH, y1 = h.padH + h.wallH;
+  const floorTop = houseFloorTop(h);
   const segments = [];
+  const windows = [];
   const doorW = h.doorW || 1.5, doorH = h.doorH || 2.1;
+  const spec = WINDOW_SPEC;
   const push = (cx, cz, sw, sd, sy0, sy1) => segments.push({
     x: cx, z: cz, w: sw, d: sd, y0: sy0, y1: sy1, kind: 'house', material: 'wood', house: h.id,
   });
 
-  // 南北墙沿 X 方向；东西墙沿 Z 方向
-  const sides = {
-    north: { axis: 'x', len: h.w + t, cx: h.x, cz: h.z - h.d / 2 },
-    south: { axis: 'x', len: h.w + t, cx: h.x, cz: h.z + h.d / 2 },
-    west: { axis: 'z', len: h.d + t, cx: h.x - h.w / 2, cz: h.z },
-    east: { axis: 'z', len: h.d + t, cx: h.x + h.w / 2, cz: h.z },
-  };
+  // 窗台高度：默认离室内地面 1.0m；矮墙自动上抬，保证洞口上方仍有过梁
+  const winY0 = Math.min(floorTop + spec.sill, y1 - spec.h - 0.2);
+  const winY1 = winY0 + spec.h;
 
   let door = null;
-  for (const side of Object.keys(sides)) {
-    const s = sides[side];
-    const hasDoor = h.doorSide === side;
-    if (!hasDoor) {
-      if (s.axis === 'x') push(s.cx, s.cz, s.len, t, y0, y1);
-      else push(s.cx, s.cz, t, s.len, y0, y1);
-      continue;
-    }
-    // 带门洞：左右两段 + 门楣
+  for (const s of houseSides(h)) {
     const half = s.len / 2;
-    const dw = Math.min(doorW, s.len - 1.2) / 2;
-    const segLen = half - dw;
-    if (segLen > 0.1) {
-      if (s.axis === 'x') {
-        push(s.cx - (dw + segLen / 2), s.cz, segLen, t, y0, y1);
-        push(s.cx + (dw + segLen / 2), s.cz, segLen, t, y0, y1);
-      } else {
-        push(s.cx, s.cz - (dw + segLen / 2), t, segLen, y0, y1);
-        push(s.cx, s.cz + (dw + segLen / 2), t, segLen, y0, y1);
+    const hasDoor = h.doorSide === s.name;
+    const holes = [];
+
+    if (hasDoor) {
+      // 门洞：从地面通到门楣
+      const dw = Math.min(doorW, s.len - 1.2) / 2;
+      const lintelH = Math.min(doorH, h.wallH - 0.3);
+      holes.push({ u0: -dw, u1: dw, yb: y0, yt: y0 + lintelH });
+      door = {
+        side: s.name,
+        x: s.cx, z: s.cz,
+        w: dw * 2, h: lintelH,
+        dirX: s.dirX, dirZ: s.dirZ,
+        padH: y0,
+      };
+    } else {
+      // 无玻璃窗洞：只开在非门墙，保证门厅净空与门框完整
+      for (const w of wallWindows(h, s)) {
+        holes.push({ u0: w.u0, u1: w.u1, yb: winY0, yt: winY1 });
+        windows.push({
+          house: h.id, side: s.name, axis: s.axis,
+          x: s.axis === 'x' ? s.cx + (w.u0 + w.u1) / 2 : s.cx,
+          z: s.axis === 'x' ? s.cz : s.cz + (w.u0 + w.u1) / 2,
+          w: w.w, h: spec.h, y0: winY0, y1: winY1,
+          sill: winY0 - floorTop,
+          dirX: s.dirX, dirZ: s.dirZ,
+          wallCx: s.cx, wallCz: s.cz, wallT: t,
+        });
       }
     }
-    const lintelH = Math.min(doorH, h.wallH - 0.3);
-    if (h.wallH - lintelH > 0.05) {
-      if (s.axis === 'x') push(s.cx, s.cz, dw * 2, t, y0 + lintelH, y1);
-      else push(s.cx, s.cz, t, dw * 2, y0 + lintelH, y1);
-    }
-    door = {
-      side,
-      x: s.axis === 'x' ? s.cx : s.cx,
-      z: s.axis === 'x' ? s.cz : s.cz,
-      w: dw * 2, h: lintelH,
-      dirX: side === 'west' ? -1 : side === 'east' ? 1 : 0,
-      dirZ: side === 'north' ? -1 : side === 'south' ? 1 : 0,
-      padH: y0,
+
+    // 按洞口切分：洞口之间整高实墙，洞口上下补窗下墙 / 过梁
+    holes.sort((a, b) => a.u0 - b.u0);
+    let cursor = -half;
+    const span = (a, b, sy0, sy1) => {
+      const len = b - a;
+      if (len <= 0.02 || sy1 - sy0 <= 0.02) return;
+      const u = (a + b) / 2;
+      if (s.axis === 'x') push(s.cx + u, s.cz, len, t, sy0, sy1);
+      else push(s.cx, s.cz + u, t, len, sy0, sy1);
     };
+    for (const hole of holes) {
+      span(cursor, hole.u0, y0, y1);
+      span(hole.u0, hole.u1, y0, hole.yb);   // 窗下墙（门洞为 0，自动跳过）
+      span(hole.u0, hole.u1, hole.yt, y1);   // 窗上过梁 / 门楣
+      cursor = hole.u1;
+    }
+    span(cursor, half, y0, y1);
   }
-  return { segments, door, y0, y1 };
+  return { segments, windows, door, y0, y1 };
+}
+
+// ---------- 家具定义：视觉外廓 = 碰撞箱（误差 0） ----------
+// w=正面宽度、d=进深、top=台面/座面高度、h=整体高度（碰撞箱顶）
+export const FURNITURE_DEF = {
+  table: { w: 1.5, d: 0.95, top: 0.75, h: 0.75 },      // 桌子：桌面 + 4 条腿，高 0.75m
+  chair: { w: 0.52, d: 0.52, top: 0.45, h: 0.86 },     // 椅子：座面 0.45m + 靠背
+  bed: { w: 2.0, d: 1.0, top: 0.45, h: 0.5 },          // 床：2m×1m×0.5m（床架 + 床垫）
+  chest: { w: 1.0, d: 0.55, top: 0.9, h: 0.9 },        // 柜子：长方体 + 门缝，高 0.9m
+};
+const FURN_TYPES = ['table', 'chair', 'bed', 'chest'];
+
+// 每栋房子的家具清单（确定性随机：固定种子 mulberry32，禁止 Math.random）
+export const FURNITURE = [];
+
+for (const h of HOUSES) {
+  const { door } = houseWallSegments(h);
+  const rand = mulberry32(seedOf(h.id + ':furn'));
+  const floorTop = houseFloorTop(h);
+  const t = 0.34;
+  const innerX = h.w / 2 - t / 2;   // 内墙面到房屋中心的距离
+  const innerZ = h.d / 2 - t / 2;
+  const blocked = [];
+
+  // 门厅净空：门内侧 2m ×（门宽 + 0.9m）不放家具，保证玩家能走进来
+  if (door) {
+    const cw = door.w + 0.9, cd = 2.0;
+    blocked.push({
+      x: door.x - door.dirX * (cd / 2 - 0.1),
+      z: door.z - door.dirZ * (cd / 2 - 0.1),
+      w: door.dirX !== 0 ? cd : cw,
+      d: door.dirZ !== 0 ? cd : cw,
+    });
+  }
+
+  const collides = (x, z, w, d, pad) => blocked.some((o) =>
+    Math.abs(x - o.x) < (w + o.w) / 2 + pad && Math.abs(z - o.z) < (d + o.d) / 2 + pad);
+
+  // 候选位：贴四面墙，每面墙 3 个沿线位置；rot 只取 0/±90°/180°，
+  // 这样旋转后的 AABB 尺寸严格等于视觉外廓，碰撞不会比模型大。
+  const slots = [];
+  for (const s of houseSides(h)) {
+    for (const frac of [0.5, 0.3, 0.7]) slots.push({ s, frac });
+  }
+  for (let i = slots.length - 1; i > 0; i--) {        // 确定性洗牌
+    const j = Math.floor(rand() * (i + 1));
+    const tmp = slots[i]; slots[i] = slots[j]; slots[j] = tmp;
+  }
+  const types = FURN_TYPES.slice();
+  for (let i = types.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    const tmp = types[i]; types[i] = types[j]; types[j] = tmp;
+  }
+
+  // 大房子 2~4 件，小屋固定 2 件（避免塞满走不动）
+  const want = Math.min(types.length, h.w * h.d < 45 ? 2 : 2 + Math.floor(rand() * 3));
+
+  for (let k = 0; k < want; k++) {
+    const type = types[k];
+    const def = FURNITURE_DEF[type];
+    let spot = null;
+    for (const slot of slots) {
+      const s = slot.s;
+      const rot = Math.atan2(-s.dirX, -s.dirZ);            // 家具正面朝室内
+      const c = Math.abs(Math.cos(rot)), sn = Math.abs(Math.sin(rot));
+      const fw = c * def.w + sn * def.d;                   // 世界 X 外廓
+      const fd = sn * def.w + c * def.d;                   // 世界 Z 外廓
+      const along = s.axis === 'x' ? fw : fd;              // 沿墙方向尺寸
+      const depth = s.axis === 'x' ? fd : fw;              // 垂直墙面尺寸
+      const span = s.len - 0.9 - along;
+      if (span < 0.1) continue;
+      const u = (slot.frac - 0.5) * span;
+      const off = 0.17 + depth / 2 + 0.05;                 // 背贴内墙面（留 5cm 缝）
+      const x = s.axis === 'x' ? s.cx + u : s.cx - s.dirX * off;
+      const z = s.axis === 'x' ? s.cz - s.dirZ * off : s.cz + u;
+      if (Math.abs(x - h.x) + fw / 2 > innerX - 0.02) continue;
+      if (Math.abs(z - h.z) + fd / 2 > innerZ - 0.02) continue;
+      if (collides(x, z, fw, fd, 0.16)) continue;
+      spot = { x, z, rot, fw, fd };
+      break;
+    }
+    if (!spot) continue;
+    blocked.push({ x: spot.x, z: spot.z, w: spot.fw, d: spot.fd });
+    FURNITURE.push({
+      house: h.id, type,
+      x: spot.x, z: spot.z, y: floorTop,
+      rot: spot.rot,
+      w: def.w, d: def.d, top: def.top, h: def.h,
+      fw: spot.fw, fd: spot.fd,
+    });
+  }
 }
 
 export const COLLIDERS = [];
 
-// 房屋墙
+// 房屋墙（含窗下墙 / 过梁 / 窗间墙垛）
 for (const h of HOUSES) {
   const { segments } = houseWallSegments(h);
   for (const s of segments) COLLIDERS.push(s);
+}
+// 家具：不透明实心碰撞（AABB 与视觉外廓逐位一致）
+for (const f of FURNITURE) {
+  COLLIDERS.push({
+    x: f.x, z: f.z, w: f.fw, d: f.fd,
+    y0: f.y, y1: f.y + f.h,
+    kind: 'furniture', material: 'wood', house: f.house, furniture: f.type,
+  });
 }
 // 栅栏
 for (const f of FENCES) {

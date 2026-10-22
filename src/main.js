@@ -15,6 +15,7 @@ import { initAudio, sfx, setAudioListener, startAmbience, stopAmbience } from '.
 import { createCharacter } from './models/character.js';
 import { createWeaponModel } from './models/weapons.js';
 import { initHud, hud } from './hud.js';
+import { createBloodFX } from './bloodfx.js';
 import { uploadTexturesStep, pendingUploadCount } from './world/textures.js';
 
 // ---------- 设置（localStorage / HUD 设置面板共享） ----------
@@ -37,6 +38,8 @@ const HUD_METHODS = [
   'showDeath', 'hideDeath', 'showPause', 'hidePause',
   'showWarmup', 'hideWarmup', 'setCountdown', 'setMatchPhase', 'setGod',
   'showMatchEnd', 'hideMatchEnd',
+  // 拆弹模式 HUD
+  'setBombHud', 'setBombPrompt', 'showBuyMenu', 'hideBuyMenu', 'updateBuyCredits', 'setCredits',
   'setMinimapState', 'setVisible', 'setStatus',
 ];
 const H = {};
@@ -157,7 +160,45 @@ console.error = (...args) => { errors.push(args.join(' ')); originalError(...arg
 
 let lastMinimapAt = 0;
 let lastStateMsg = null;
-let lastHud = { aiming: null, scope: null, stance: null, weapon: null, mag: -1, reserve: -1 };
+let lastHud = { aiming: null, scope: null, stance: null, weapon: null, mag: -1, reserve: -1, zoomLabel: null };
+
+// ===== 拆弹模式客户端状态 =====
+let buyMenuData = [];        // 购买菜单（来自 welcome.buyMenu）
+let buyMenuClosed = false;   // 玩家手动关掉购买界面后本回合不再自动弹出
+let buyUiOpen = false;       // 购买界面当前是否打开（本地状态，不依赖 HUD 内部 state）
+let bombState = null;        // 最近一次 bomb 快照
+let bombPromptKey = '';      // 当前交互提示（避免每帧重设 DOM）
+
+/** 根据 bomb 快照计算"我能不能安放/拆除/捡包"，并更新提示 */
+function updateBombPrompt(m) {
+  const b = m && m.bomb;
+  if (!b || !local) { H.setBombPrompt(''); return; }
+  const me = (m.players || []).find((p) => p.id === myId);
+  if (!me || !me.alive) { H.setBombPrompt(''); return; }
+
+  // 1) 我携带炸弹，且站在包点内 → 提示安放
+  if (b.state === 'carried' && b.carrierId === myId) {
+    const sites = b.sites || [];
+    const inSite = sites.find((s) => Math.hypot(local.pos.x - s.x, local.pos.z - s.z) <= 3.2);
+    if (inSite) { H.setBombPrompt('安放炸弹（' + inSite.id + ' 点）', 'E'); return; }
+    H.setBombPrompt('前往 A / B 点安放炸弹', '·');
+    return;
+  }
+  // 2) 炸弹已安放，我是防守方且在范围内 → 提示拆除
+  if (b.state === 'planted') {
+    const d = Math.hypot(local.pos.x - b.x, local.pos.z - b.z);
+    if (myTeam === 'bravo' && d <= 2.2) {
+      H.setBombPrompt(b.defuseLeft > 0 ? '拆除中…' : '拆除炸弹', 'E');
+      return;
+    }
+  }
+  // 3) 炸弹掉在地上，我是进攻方且在附近 → 提示捡起
+  if (b.state === 'dropped') {
+    const d = Math.hypot(local.pos.x - b.x, local.pos.z - b.z);
+    if (myTeam === 'alpha' && d <= 2.2) { H.setBombPrompt('捡起炸弹', 'E'); return; }
+  }
+  H.setBombPrompt('');
+}
 
 const hex = (c) => '#' + Number(c || 0x888888).toString(16).padStart(6, '0');
 const esc = (s) => String(s).replace(/[&<>"']/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m]));
@@ -231,6 +272,19 @@ function removeRemote(id) {
   remotes.delete(id);
 }
 
+// ===== 血液特效（单例）=====
+let bloodFX = null;
+function ensureBloodFX() {
+  if (bloodFX) return bloodFX;
+  try {
+    bloodFX = createBloodFX(scene, renderer);
+  } catch (e) {
+    console.warn('[bloodfx] 初始化失败', e);
+    bloodFX = null;
+  }
+  return bloodFX;
+}
+
 const _glintTexture = (() => {
   try {
     const c = document.createElement('canvas');
@@ -261,6 +315,20 @@ function ensureGlint(r) {
 function updateRemotes(dt) {
   for (const r of remotes.values()) {
     const t = r.target;
+    // 布娃娃：死亡瞬间触发一次，之后交给 ragdoll 物理（update 内部会走物理，不再走 IK）
+    if (!t.alive && r.char.enterRagdoll && !r.char.ragdollActive) {
+      const dx = r.group.position.x - camera.position.x;
+      const dz = r.group.position.z - camera.position.z;
+      const len = Math.hypot(dx, dz) || 1;
+      // 冲量方向：从相机指向尸体（即"被打飞"的方向），强度按伤害估算
+      try {
+        r.char.enterRagdoll({ x: dx / len, y: 0.35, z: dz / len }, 6.5);
+      } catch { /* ignore */ }
+    }
+    // 复活：退出布娃娃，恢复正常动画
+    if (t.alive && r.char.exitRagdoll && r.char.ragdollActive) {
+      try { r.char.exitRagdoll(); } catch { /* ignore */ }
+    }
     const k = 1 - Math.exp(-12 * dt);
     const px = r.group.position.x, pz = r.group.position.z;
     r.group.position.x += (t.x - r.group.position.x) * k;
@@ -564,10 +632,13 @@ window.addEventListener('wheel', (e) => {
 document.addEventListener('keydown', (e) => {
   if (e.code === 'Space') {
     e.preventDefault();
-    // 开局等待阶段：空格 = 开始 10 秒倒计时
+    // 开局等待阶段：空格 = 开始 3 秒倒计时
     if (started && matchPhase === 'waiting') {
       net.send({ t: 'ready' });
-      H.setMatchPhase('countdown', 10);
+      // 本地先乐观进入倒计时（服务器 match_countdown 会再确认一次）
+      matchPhase = 'countdown';
+      matchCountdown = 3;
+      H.setMatchPhase('countdown', 3);
       return;
     }
     // 未开赛不跳跃
@@ -577,6 +648,50 @@ document.addEventListener('keydown', (e) => {
   }
   if (local && started && !e.repeat && local.locked && local.alive && e.code === 'KeyR') {
     if (local.requestReload()) { S.reload(local.weapon); H.setReload(0.001); }
+  }
+  // ===== 拆弹模式按键 =====
+  if (started && matchPhase === 'playing' && !e.repeat) {
+    // B：开/关购买界面（仅购买窗口内）
+    if (e.code === 'KeyB') {
+      const b = bombState;
+      if (b && b.buyLeft > 0 && buyMenuData.length) {
+        e.preventDefault();
+        if (buyUiOpen) {
+          H.hideBuyMenu();
+          buyUiOpen = false;
+          buyMenuClosed = true;
+        } else {
+          H.showBuyMenu(buyMenuData, H.state ? H.state.credits : 0, b.buyLeft);
+          buyUiOpen = true;
+          buyMenuClosed = false;
+        }
+      }
+      return;
+    }
+    // 购买界面内的数字键 → 购买对应武器
+    if (buyUiOpen && /^Digit([1-9])$/.test(e.code)) {
+      e.preventDefault();
+      const idx = Number(e.code.slice(5)) - 1;
+      const item = buyMenuData[idx];
+      if (item) {
+        net.send({ t: 'buy', weapon: item.id });
+        S.uiClick();
+      }
+      return;
+    }
+    // E：安放 / 拆除 / 捡包
+    if (e.code === 'KeyE') {
+      const b = bombState;
+      if (!b) return;
+      if (b.state === 'carried' && b.carrierId === myId) {
+        net.send({ t: 'bomb_plant' });
+      } else if (b.state === 'planted' && myTeam === 'bravo') {
+        net.send({ t: 'bomb_defuse' });
+      } else if (b.state === 'dropped' && myTeam === 'alpha') {
+        net.send({ t: 'bomb_pickup' });
+      }
+      return;
+    }
   }
   if (local) local.keys.add(e.code);
 });
@@ -590,6 +705,10 @@ const ALLOWED_CODES = new Set([
   'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight',
   'ShiftLeft', 'ShiftRight',
   'KeyC', 'Space', 'KeyR',
+  // 拆弹模式：B 购买 / E 交互（安放·拆除·捡包）
+  'KeyB', 'KeyE',
+  // 购买界面数字键
+  'Digit1', 'Digit2', 'Digit3', 'Digit4', 'Digit5', 'Digit6', 'Digit7',
   // 后台命令控制台呼出键
   'Backquote', 'Enter', 'NumpadEnter', 'Escape',
 ]);
@@ -855,6 +974,10 @@ net.on('welcome', (m) => {
   myId = m.id;
   myTeam = m.team || 'alpha';
   maxPlayers = m.maxPlayers || WORLD.maxPlayers;
+  // 拆弹模式：购买菜单 + 初始资金
+  buyMenuData = Array.isArray(m.buyMenu) ? m.buyMenu : [];
+  buyMenuClosed = false;
+  if (typeof m.credits === 'number') H.setCredits(m.credits);
   local = new LocalPlayer(camera, net);
   local.sens = SENS_BASE * settings.sens;
   local.team = myTeam;
@@ -966,6 +1089,21 @@ function syncPlayerList(players) {
 net.on('state', (m) => {
   if (!started || !local) return;
   lastStateMsg = m;
+  // 拆弹模式 HUD 同步
+  if (m.match && m.match.mode === 'bomb' && m.bomb) {
+    bombState = m.bomb;
+    H.setBombHud(m.bomb);
+    if (typeof m.credits === 'number') H.setCredits(m.credits);
+    if (H.setBombPrompt) updateBombPrompt(m);
+    // 购买窗口：仅在窗口开启且玩家没主动关闭时自动弹出
+    if (m.bomb.buyLeft > 0 && buyMenuData.length && !buyMenuClosed) {
+      if (!buyUiOpen) { H.showBuyMenu(buyMenuData, m.credits || 0, m.bomb.buyLeft); buyUiOpen = true; }
+      else H.updateBuyCredits(m.credits || 0, m.bomb.buyLeft);
+    } else if (buyUiOpen && m.bomb.buyLeft <= 0) {
+      H.hideBuyMenu();
+      buyUiOpen = false;
+    }
+  }
   const me = (m.players || []).find((p) => p.id === myId);
   if (me) {
     const wasAlive = local.alive;
@@ -1147,6 +1285,14 @@ net.on('hit', (m) => {
         _toCam.copy(camera.position).sub(_bloodPos).normalize();
         _bloodPos.addScaledVector(_toCam, 0.12);
         effects.bloodImpact(_bloodPos, _toCam, m.part === 'head');
+        // 血液喷溅 + 地面/墙面贴花（低饱和暗红）
+        const bfx = ensureBloodFX();
+        if (bfx) {
+          // 喷溅方向：子弹前进方向（相机朝向）
+          const dir = camera.getWorldDirection(new THREE.Vector3());
+          const sev = Math.min(1, (m.part === 'head' ? 55 : 28) / 100);
+          bfx.spawnBloodImpact(_bloodPos, dir, sev);
+        }
       } catch { /* ignore */ }
     }
     const rv = remotes.get(m.targetId);
@@ -1180,13 +1326,70 @@ net.on('killfeed', (m) => {
 
 net.on('match_countdown', (m) => {
   lastCountdownShown = -1;
-  H.setMatchPhase('countdown', (m && m.seconds) || 10);
+  // 同步本地倒计时变量，保证 HUD/自动化能立即读到（否则要等下一个 20Hz 快照）
+  matchPhase = 'countdown';
+  matchCountdown = Math.max(0, (m && m.seconds) || 3);
+  H.setMatchPhase('countdown', matchCountdown);
   S.uiClick();
 });
 net.on('match_start', () => {
   H.hideWarmup();
   H.addToast('战斗开始 · 占领 A/B/C 据点');
 });
+
+// ===== 拆弹模式网络事件 =====
+net.on('round_start', (m) => {
+  buyMenuClosed = false;
+  H.addToast('回合 ' + (m.round || 1) + ' 开始 · 按 B 购买');
+  H.setBombHud({ roundScores: m.roundScores, state: 'idle', sites: [] });
+  S.uiClick();
+});
+net.on('round_end', (m) => {
+  const mine = m.winner === myTeam;
+  const reasonText = {
+    exploded: '炸弹爆炸', defused: '炸弹被拆除', time: '时间到', elimination: '全灭',
+  }[m.reason] || m.reason || '';
+  H.addToast((mine ? '回合胜利' : '回合失败') + ' · ' + reasonText +
+    '（' + (m.roundScores ? m.roundScores.alpha + ':' + m.roundScores.bravo : '') + '）');
+  H.setBombPrompt('');
+  if (H.hideBuyMenu) H.hideBuyMenu();
+});
+net.on('bomb_planting', (m) => {
+  H.addToast((m.byName || '队友') + ' 正在 ' + m.site + ' 点安放炸弹');
+});
+net.on('bomb_planted', (m) => {
+  H.addToast('炸弹已安放 · ' + m.site + ' 点 · ' + (m.timeLeft || 40) + 's');
+  S.capture(1);
+});
+net.on('bomb_defusing', (m) => {
+  H.addToast((m.byName || '敌人') + ' 正在拆除炸弹！');
+});
+net.on('bomb_defused', () => { H.addToast('炸弹已被拆除'); });
+net.on('bomb_exploded', (m) => {
+  H.addToast('炸弹爆炸！');
+  if (typeof m.x === 'number') {
+    try { effects.muzzleFlash(new THREE.Vector3(m.x, (m.y || 0) + 1.2, m.z), new THREE.Vector3(0, 1, 0), 'shotgun'); } catch { /* ignore */ }
+  }
+});
+net.on('bomb_dropped', () => { H.addToast('炸弹掉落了'); });
+net.on('bomb_pickup', (m) => { H.addToast((m.byName || '队友') + ' 捡起了炸弹'); });
+net.on('bomb_plant_fail', (m) => {
+  H.addToast(m.reason === 'not_in_site' ? '必须站在 A / B 包点内才能安放' : '无法安放炸弹');
+});
+net.on('bomb_defuse_fail', (m) => {
+  H.addToast(m.reason === 'too_far' ? '离炸弹太远，无法拆除' : '无法拆除炸弹');
+});
+net.on('buy_result', (m) => {
+  if (m.ok) {
+    H.addToast(m.msg || '购买成功');
+    if (typeof m.credits === 'number') H.setCredits(m.credits);
+    if (local && m.weapon) { local.owned[m.weapon] = true; }
+  } else {
+    H.addToast(m.msg || '购买失败');
+  }
+});
+net.on('credits', (m) => { H.setCredits(m.credits); });
+
 net.on('zone_capture', (m) => {
   const mine = m.team === myTeam;
   H.addToast(`${m.zoneId || m.id || ''} 据点${mine ? '已占领' : '被敌方占领'}`);
@@ -1308,6 +1511,7 @@ function loop() {
       try { world.update(dt, { camera, playerPos: local.pos, time: elapsed, aiming: local.aiming, scope: scopeNow(local) }); } catch (e) { errors.push('world.update: ' + e.message); }
     }
     try { effects.update(dt, camera); } catch (e) { errors.push('effects.update: ' + e.message); }
+    if (bloodFX) { try { bloodFX.update(dt); } catch (e) { errors.push('bloodfx.update: ' + e.message); } }
     for (const s of itemMeshes.values()) {
       s.bob += dt * 2.2;
       s.group.position.y = s.baseY + 0.08 + Math.sin(s.bob) * 0.06;
@@ -1483,6 +1687,10 @@ window.__game = {
       yaw: +r.group.rotation.y.toFixed(2), hp: r.target.hp, alive: r.target.alive, weapon: r.weaponId,
     }));
   },
+  // 原始远程角色对象（含 char / 布娃娃接口），供调试与自动化测试
+  get remotesRaw() { return [...remotes.values()]; },
+  // 血液特效实例（可能尚未初始化）
+  get bloodFX() { return bloodFX; },
   get serverPlayers() { return lastStateMsg ? lastStateMsg.players : []; },
   get itemCount() { return itemMeshes.size; },
   get enemyTracers() { return 0; },

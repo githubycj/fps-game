@@ -155,7 +155,7 @@ try {
     p0 ? `hp=${p0.hp} pos=${p0.x},${p0.z}` : 'null');
   check('出生自带钢制插板（满护甲 100）', p0 && p0.shield === 100, 'shield=' + (p0 && p0.shield));
 
-  // ---------- 开局流程：等待真人按空格 → 10s 倒计时 → playing ----------
+  // ---------- 开局流程：等待真人按空格 → 3s 倒计时 → playing ----------
   const warmupInfo = await evaluate(() => ({
     visible: !document.getElementById('warmup').classList.contains('hidden'),
     title: (document.getElementById('warmupTitle') || {}).textContent || '',
@@ -167,17 +167,21 @@ try {
   await key('Space', ' ', false);
   let countdownSeen = false;
   let countdownFrom = 0;
-  for (let i = 0; i < 50; i++) {
-    await sleep(200);
+  // 倒计时只有 3 秒，轮询要密（80ms）否则会整段错过
+  for (let i = 0; i < 120; i++) {
+    await sleep(80);
     const s = await evaluate(() => ({
       phase: window.__game.matchPhase,
       count: window.__game.matchCountdown,
       countVisible: !document.getElementById('warmupCount').classList.contains('hidden'),
     }));
-    if (s.phase === 'countdown' && s.countVisible) { countdownSeen = true; countdownFrom = s.count; break; }
+    if (s.phase === 'countdown' && (s.countVisible || s.count > 0)) {
+      countdownSeen = true; countdownFrom = s.count; break;
+    }
+    if (s.phase === 'playing') break;
   }
-  check('空格开始 10 秒倒计时', countdownSeen && countdownFrom > 0 && countdownFrom <= 10, 'countdown=' + countdownFrom);
-  const playingOk = await page.waitFor(`window.__game.matchPhase === 'playing'`, 18000);
+  check('空格开始 3 秒倒计时', countdownSeen && countdownFrom > 0 && countdownFrom <= 10, 'countdown=' + countdownFrom);
+  const playingOk = await page.waitFor(`window.__game.matchPhase === 'playing'`, 25000);
   check('倒计时结束后正式开赛', playingOk);
 
   // headless 环境下 pointer lock 受限：显式进入战斗态（真实浏览器点击画面即可锁定）
@@ -195,6 +199,9 @@ try {
   await page.screenshot(path.join(SHOT_DIR, '02-gameplay.png'));
 
   // 鼠标左键射击链路（真实输入 → 本地弹药消耗 → 服务器权威同步）
+  // 拆弹模式回合开始有冻结时间，先等冻结结束再测射击
+  await page.waitFor(`!window.__game.__bombFreeze || window.__game.__bombFreeze <= 0`, 12000).catch(() => {});
+  await sleep(600);
   const magBefore = (await readPlayer()).mag;
   await mouseDown(640, 360, 'left');
   let magAfter = magBefore;

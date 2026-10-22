@@ -2,10 +2,14 @@
 // 用法：node scripts/validate-world.mjs
 import {
   WORLD, SUN, ZONES, HOUSES, COLLIDERS, SPAWNS, ITEM_SPOTS, CRATE_SPOTS, TREES, ROCKS,
+  WORLD_INFO,
   heightAt, terrainNormal, surfaceAt, houseWallSegments, circleOverlapsBox,
   stepPlayerPhysics, movePlayerHorizontal, applyJump, groundHeightAt,
   raycastWorld, losBlocked, isWalkableAt, zoneOf, pickSpawn, hitboxesFor,
 } from '../shared/world.js';
+
+// 山丘列表从 WORLD_INFO 取（world.js 未单独导出 HILLS）
+const HILLS = WORLD_INFO.hills;
 
 let pass = 0, fail = 0;
 const ok = (name, cond, extra = '') => {
@@ -17,8 +21,10 @@ const sleepLog = (t) => console.log('\n== ' + t + ' ==');
 // ---------- 地形 ----------
 sleepLog('地形');
 let hmin = Infinity, hmax = -Infinity, maxSlope = 0;
-for (let x = -68; x <= 68; x += 1) {
-  for (let z = -68; z <= 68; z += 1) {
+// 采样范围随地图尺寸自适应（当前 240 → 半宽 120，取 half-4 留边）
+const SAMPLE = WORLD.half - 4;
+for (let x = -SAMPLE; x <= SAMPLE; x += 1.6) {
+  for (let z = -SAMPLE; z <= SAMPLE; z += 1.6) {
     const h = heightAt(x, z);
     if (h < hmin) hmin = h;
     if (h > hmax) hmax = h;
@@ -146,8 +152,16 @@ sleepLog('物理');
   }
   ok('可穿过门洞进入房屋', entered, `z=${b5.z.toFixed(2)} doorZ=${dd.z.toFixed(2)}`);
 
-  // 跳上低矮工事（0.83m 高，跳跃可及）：贴着障碍起跳并持续前推
-  const low = COLLIDERS.filter((o) => (o.kind === 'sandbag' || o.kind === 'defense') && o.y1 - heightAt(o.x, o.z) < 1.0 && o.y1 - heightAt(o.x, o.z) > 0.3)[0];
+  // 跳上低矮工事（约 0.95m 高，跳跃可及）：贴着障碍起跳并持续前推
+  // 只挑「地面相对平坦」的样本：山顶上的沙袋地面本身就有坡度，不适合做跳跃测试
+  const low = COLLIDERS.filter((o) => {
+    if (o.kind !== 'sandbag' && o.kind !== 'defense') return false;
+    const rel = o.y1 - heightAt(o.x, o.z);
+    if (rel < 0.3 || rel > 1.05) return false;
+    // 起点处地面与障碍底部高差要小（<0.35m），否则是斜坡上的工事
+    const sx = o.x - (o.w / 2 + WORLD.playerRadius + 0.05);
+    return Math.abs(heightAt(sx, o.z) - heightAt(o.x, o.z)) < 0.35;
+  })[0];
   ok('存在可跳上的低矮物体', !!low);
   if (low) {
     const top = low.y1;
@@ -184,12 +198,14 @@ sleepLog('射线 / 视线');
   ok('向下射线命中地形', !!down && down.kind === 'terrain' && Math.abs(down.t - (5 - heightAt(0, 0))) < 0.2, down ? 't=' + down.t.toFixed(2) : 'null');
   const up = raycastWorld(0, 2, 0, 0, 1, 0, 20);
   ok('向上射线不命中', up === null);
-  const wallRay = raycastWorld(-38, HOUSES[0].padH + 1.2, -33, 0, 0, 1, 30);
+  // 房屋墙体：从房前 5.5m 沿 +Z 打向房子中心
+  const wallRay = raycastWorld(HOUSES[0].x, HOUSES[0].padH + 1.2, HOUSES[0].z - 5.5, 0, 0, 1, 30);
   ok('房屋墙体挡住射线', !!wallRay && wallRay.kind === 'house', wallRay ? `${wallRay.kind}` : 'null');
 
-  // 视线：山丘遮挡
-  const hillOk = losBlocked(-30, 2, 30, -52, 2, 54);
-  ok('山丘遮挡视线', hillOk);
+  // 视线：山丘遮挡（站在山丘外侧向山丘中心看，中间是抬高的山体）
+  const hill0 = HILLS[0];
+  const hillOk = losBlocked(hill0.x + hill0.r + 6, 1.0, hill0.z, hill0.x, 1.0, hill0.z);
+  ok('山丘遮挡视线', hillOk, `hill=${hill0.x},${hill0.z} h=${hill0.h}`);
   // 视线：广场开阔 20m 不遮挡
   ok('开阔地视线通畅', !losBlocked(0, heightAt(0, 0) + 1.64, 0, 10, heightAt(10, 0) + 1.64, 0));
   // 视线：房屋内部被墙挡住
@@ -202,8 +218,9 @@ sleepLog('射线 / 视线');
 // ---------- 可通行连通性（BFS 到各据点） ----------
 sleepLog('可达性（网格 BFS，供 AI 参考）');
 {
-  const cell = 1, N = 140;
-  const coord = (i, j) => [-70 + i + 0.5, -70 + j + 0.5];
+  // 网格随地图尺寸自适应（cell=2m，覆盖整个可玩区）
+  const cell = 2, N = Math.round(WORLD.size / cell);
+  const coord = (i, j) => [-WORLD.half + (i + 0.5) * cell, -WORLD.half + (j + 0.5) * cell];
   const key = (i, j) => j * N + i;
   const walkable = new Uint8Array(N * N);
   for (let j = 0; j < N; j++) {
@@ -212,7 +229,10 @@ sleepLog('可达性（网格 BFS，供 AI 参考）');
       walkable[key(i, j)] = isWalkableAt(x, z) ? 1 : 0;
     }
   }
-  const si = 70, sj = 122; // (0.5, 52.5) 附近
+  // 起点：alpha 出生点
+  const sp = SPAWNS.alpha[0];
+  const si = Math.floor((sp.x + WORLD.half) / cell);
+  const sj = Math.floor((sp.z + WORLD.half) / cell);
   const dist = new Int32Array(N * N).fill(-1);
   const q = [si + sj * N];
   dist[si + sj * N] = 0;
@@ -229,13 +249,14 @@ sleepLog('可达性（网格 BFS，供 AI 参考）');
     }
   }
   const reach = (x, z) => {
-    const i = Math.floor(x + 70), j = Math.floor(z + 70);
+    const i = Math.floor((x + WORLD.half) / cell), j = Math.floor((z + WORLD.half) / cell);
     return i >= 0 && j >= 0 && i < N && j < N && dist[key(i, j)] >= 0;
   };
-  for (const zn of ZONES) ok(`出生区 → 据点 ${zn.id} 可通行`, reach(zn.x, zn.z), `pathCells=${reach(zn.x, zn.z) ? dist[Math.floor(zn.x + 70) + Math.floor(zn.z + 70) * N] : 'n/a'}`);
-  ok('出生区 → 敌方出生区 可通行', reach(0, -55));
-  ok('出生区 → 谷仓 可通行', reach(2, -46));
-  ok('出生区 → 西南山丘 可通行', reach(-52, 54));
+  for (const zn of ZONES) ok(`出生区 → 据点 ${zn.id} 可通行`, reach(zn.x, zn.z), `pathCells=${reach(zn.x, zn.z) ? dist[Math.floor((zn.x + WORLD.half) / cell) + Math.floor((zn.z + WORLD.half) / cell) * N] : 'n/a'}`);
+  ok('出生区 → 敌方出生区 可通行', reach(SPAWNS.bravo[0].x, SPAWNS.bravo[0].z));
+  const barn = HOUSES.find((h) => h.id === 'BARN') || HOUSES[0];
+  ok('出生区 → 谷仓 可通行', reach(barn.x, barn.z));
+  ok('出生区 → 西南山丘 可通行', reach(HILLS[0].x, HILLS[0].z));
   // 房屋内部可达（通过门洞）
   const hh = HOUSES[0], dd2 = houseWallSegments(hh).door;
   ok('出生区 → H1 门口 可通行', reach(dd2.x, dd2.z + dd2.dirZ * 1.5));

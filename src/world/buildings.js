@@ -1,10 +1,13 @@
 // ===== 建筑：可进入民房 / 谷仓 / 工具房 + 木栅栏 + 边界链网 =====
 // 墙体直接由 shared/world.js 的 houseWallSegments(h).segments 生成（世界空间 AABB），
-// 因此视觉墙体 / 门洞 / 门楣与物理碰撞体逐位一致。
-// 静态几何按材质合并：墙、屋顶、木构件、玻璃、链网、边界金属各 1 个 draw call。
+// 因此视觉墙体 / 门洞 / 无玻璃窗洞 / 窗下墙 / 过梁与物理碰撞体逐位一致。
+// 家具同样来自 shared/world.js 的 FURNITURE 清单（确定性随机），视觉外廓 = 碰撞箱。
+// 静态几何按材质合并：墙、屋顶、木构件（含窗框/家具）、链网、边界金属各 1 个 draw call。
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { HOUSES, FENCES, BOUNDARY, WORLD, heightAt, houseWallSegments } from './shared.js';
+import {
+  HOUSES, FENCES, BOUNDARY, WORLD, heightAt, houseWallSegments, FURNITURE,
+} from './shared.js';
 import { makeChainlinkTexture, makeRoofNormalTexture, makeSidingNormalTexture } from './textures.js';
 
 const WALL_COLOR = 0xd8d2c4;
@@ -85,6 +88,83 @@ function addGable(list, colorHex, h, side) {
   pushGeo(list, geo, colorHex);
 }
 
+// ---------- 家具建模（程序化几何，无外部模型）----------
+// 本地坐标：x=正面宽度、y=高度、z=进深（正面朝 -z），再绕 Y 旋转 rot 放到世界。
+// 局部几何先建好再整体旋转，所以旋转后外廓严格等于 fw/fd，碰撞箱不会比视觉大。
+function addLocalBox(list, colorHex, cx, cy, cz, w, h, d, f) {
+  const geo = new THREE.BoxGeometry(w, h, d);
+  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, f.rot, 0));
+  const m = new THREE.Matrix4().compose(
+    new THREE.Vector3(f.x, f.y, f.z), q, new THREE.Vector3(1, 1, 1)
+  );
+  const lm = new THREE.Matrix4().makeTranslation(cx, cy, cz);
+  geo.applyMatrix4(lm);
+  geo.applyMatrix4(m);
+  pushGeo(list, geo, colorHex);
+}
+
+function buildFurniture(list, f) {
+  const w = f.w, d = f.d, top = f.top, h = f.h;
+  const woodDark = 0x6f5a44, woodMid = 0x8a6f52, woodLight = 0x9d8163;
+  const metal = 0x8f8a80;
+  if (f.type === 'table') {
+    // 桌面 0.75m + 4 条腿（腿内缩 6cm）
+    addLocalBox(list, woodMid, 0, top - 0.03, 0, w, 0.06, d, f);
+    addLocalBox(list, woodLight, 0, top - 0.075, 0, w - 0.08, 0.03, d - 0.08, f);  // 桌面下沿封边
+    const lx = w / 2 - 0.09, lz = d / 2 - 0.09;
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        addLocalBox(list, woodDark, sx * lx, (top - 0.06) / 2, sz * lz, 0.07, top - 0.06, 0.07, f);
+      }
+    }
+    // 两道横撑
+    addLocalBox(list, woodDark, 0, 0.16, d / 2 - 0.09, w - 0.26, 0.05, 0.05, f);
+    addLocalBox(list, woodDark, 0, 0.16, -(d / 2 - 0.09), w - 0.26, 0.05, 0.05, f);
+  } else if (f.type === 'chair') {
+    // 座面 0.45m + 4 腿 + 靠背（靠背在 +z 侧，正面朝 -z）
+    addLocalBox(list, woodMid, 0, top - 0.03, 0, w, 0.06, d, f);
+    const lx = w / 2 - 0.05, lz = d / 2 - 0.05;
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        addLocalBox(list, woodDark, sx * lx, (top - 0.06) / 2, sz * lz, 0.05, top - 0.06, 0.05, f);
+      }
+    }
+    // 靠背立柱 + 两根横档（顶到碰撞箱顶 h）
+    for (const sx of [-1, 1]) {
+      addLocalBox(list, woodDark, sx * lx, (top + h) / 2, d / 2 - 0.05, 0.05, h - top, 0.05, f);
+    }
+    addLocalBox(list, woodMid, 0, h - 0.05, d / 2 - 0.05, w - 0.04, 0.1, 0.045, f);
+    addLocalBox(list, woodMid, 0, top + 0.22, d / 2 - 0.05, w - 0.06, 0.07, 0.04, f);
+  } else if (f.type === 'bed') {
+    // 床架（高 0.25）+ 床垫（高到 0.5）+ 床头板
+    addLocalBox(list, woodDark, 0, 0.125, 0, w - 0.04, 0.25, d - 0.04, f);
+    addLocalBox(list, 0xcfc6b4, 0, 0.25 + (top - 0.25) / 2, 0, w - 0.16, top - 0.25, d - 0.16, f);
+    // 枕头（靠床头 -x 侧）
+    addLocalBox(list, 0xe4dccb, -(w / 2 - 0.34), top + 0.035, 0, 0.46, 0.07, d - 0.28, f);
+    // 床头板 / 床尾板（到碰撞箱顶 h）
+    addLocalBox(list, woodMid, -(w / 2 - 0.03), h / 2, 0, 0.06, h, d, f);
+    addLocalBox(list, woodMid, (w / 2 - 0.03), (h * 0.7) / 2, 0, 0.06, h * 0.7, d, f);
+    // 四条床脚
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        addLocalBox(list, metal, sx * (w / 2 - 0.08), 0.04, sz * (d / 2 - 0.08), 0.06, 0.08, 0.06, f);
+      }
+    }
+  } else {
+    // 柜子 / 箱子：长方体 + 门缝 + 拉手 + 踢脚
+    addLocalBox(list, woodMid, 0, (h - 0.1) / 2, 0, w, h - 0.1, d, f);
+    addLocalBox(list, woodDark, 0, h - 0.05, 0, w + 0.03, 0.05, d + 0.03, f);   // 台面
+    addLocalBox(list, woodDark, 0, 0.05, 0, w - 0.06, 0.1, d - 0.06, f);       // 踢脚
+    // 正面门缝（正面朝 -z）
+    addLocalBox(list, 0x3d3227, 0, (h - 0.1) / 2, -(d / 2 + 0.004), 0.02, h - 0.26, 0.012, f);
+    addLocalBox(list, 0x3d3227, 0, h * 0.62, -(d / 2 + 0.004), w - 0.06, 0.016, 0.012, f);
+    // 两个拉手
+    for (const sx of [-1, 1]) {
+      addLocalBox(list, metal, sx * 0.08, h * 0.55, -(d / 2 + 0.03), 0.03, 0.1, 0.05, f);
+    }
+  }
+}
+
 // ---------- 主体 ----------
 export function createBuildings({ preset, anisotropy = 1 } = {}) {
   const p = preset || {};
@@ -95,13 +175,13 @@ export function createBuildings({ preset, anisotropy = 1 } = {}) {
   const walls = [];      // 墙板
   const roofs = [];      // 屋面
   const woods = [];      // 门窗框 / 门 / 门廊 / 室内地板 / 栅栏
-  const glasses = [];    // 玻璃
+  const furni = [];      // 家具（合并为 1 个 draw call）
   const metals = [];     // 边界立柱/横杆
   const chainlinks = []; // 边界链网
 
   // ================= 房屋 =================
   for (const h of HOUSES) {
-    const { segments, door } = houseWallSegments(h);
+    const { segments, door, windows } = houseWallSegments(h);
     const padH = h.padH;
     const wallTop = padH + h.wallH;
     const wallColor = h.color || WALL_COLOR;
@@ -147,51 +227,71 @@ export function createBuildings({ preset, anisotropy = 1 } = {}) {
         h.w + overhangX * 2, 0.22, 0.12);
     }
 
-    // ---- 窗户 ----
+    // ---- 无玻璃窗洞 + 窗框 ----
+    // 洞口本身已在墙体 AABB 里切好（houseWallSegments 同源），这里只补视觉构件：
+    // 内外两道窗框 + 窗洞侧壁贴脸 + 窗台板。框子全部贴在洞口外圈，
+    // 所以“净洞口”严格等于碰撞缺口（w × h），子弹/视线穿过不受框子阻挡。
+    // 法线约定：side.nx/nz 指向室外；室内方向 = -n。
     const sides = [
-      { name: 'north', nx: 0, nz: -1, face: h.z - halfD - 0.17, spanAxis: 'x' },
-      { name: 'south', nx: 0, nz: 1, face: h.z + halfD + 0.17, spanAxis: 'x' },
-      { name: 'west', nx: -1, nz: 0, face: h.x - h.w / 2 - 0.17, spanAxis: 'z' },
-      { name: 'east', nx: 1, nz: 0, face: h.x + h.w / 2 + 0.17, spanAxis: 'z' },
+      { name: 'north', nx: 0, nz: -1, spanAxis: 'x' },
+      { name: 'south', nx: 0, nz: 1, spanAxis: 'x' },
+      { name: 'west', nx: -1, nz: 0, spanAxis: 'z' },
+      { name: 'east', nx: 1, nz: 0, spanAxis: 'z' },
     ];
-    const winW = 0.95, winH = 1.15, sill = padH + 1.02;
-    for (const side of sides) {
-      const hasDoor = h.doorSide === side.name;
-      const span = side.spanAxis === 'x' ? h.w : h.d;
-      const tangent = side.spanAxis === 'x' ? 'x' : 'z';
-      const n = Math.max(1, Math.min(3, Math.floor((span - 1.4) / 2.7)));
-      for (let i = 0; i < n; i++) {
-        const u = n === 1 ? 0 : ((i / (n - 1)) - 0.5) * (span - 2.2);
-        if (hasDoor && Math.abs(u) < (h.doorW || 1.5) / 2 + 0.9) continue;
-        const cx = side.spanAxis === 'x' ? h.x + u : side.face + side.nx * 0.02;
-        const cz = side.spanAxis === 'x' ? side.face + side.nz * 0.02 : h.z + u;
-        const cy = sill + winH / 2;
-        // 玻璃（薄盒子，免朝向问题）
-        if (p.glass !== false) {
-          if (side.spanAxis === 'x') addBox(glasses, 0xa7c2d6, cx, cy, cz, winW, winH, 0.05);
-          else addBox(glasses, 0xa7c2d6, cx, cy, cz, 0.05, winH, winW);
-        }
-        // 窗框（外凸 0.06）
-        const frameColor = isBarn ? 0x6b5540 : 0xe7e2d6;
-        const fw = 0.09, fd = 0.1;
-        const off = 0.06;
-        if (side.spanAxis === 'x') {
-          const zz = side.face + side.nz * off;
-          addBox(woods, frameColor, cx - winW / 2, cy, zz, fw, winH + 0.2, fd);
-          addBox(woods, frameColor, cx + winW / 2, cy, zz, fw, winH + 0.2, fd);
-          addBox(woods, frameColor, cx, cy + winH / 2, zz, winW + fw * 2, fw, fd);
-          addBox(woods, frameColor, cx, cy - winH / 2, zz, winW + fw * 2, fw, fd);
-          addBox(woods, 0xcfc8b8, cx, cy - winH / 2 - 0.05, zz + side.nz * 0.06, winW + 0.3, 0.07, 0.22);
+    const winFrames = [];   // 窗框（最后并入 woods，共用同一个 draw call）
+    const frameColor = isBarn ? 0x6b5540 : 0xe7e2d6;
+    const fw = 0.085;       // 窗框条宽（贴洞口外侧，不侵占净洞口）
+    const wallT = 0.34;
+    for (const win of windows) {
+      const side = sides.find((s) => s.name === win.side) || sides[0];
+      const alongX = side.spanAxis === 'x';
+      const cx = win.x, cz = win.z;
+      const winW = win.w, winH = win.h;
+      const midY = (win.y0 + win.y1) / 2;
+      // 墙外皮 / 内皮（沿法线 n 的世界坐标，n 指向室外）
+      const outFace = alongX ? h.z + side.nz * (halfD + 0.17) : h.x + side.nx * (h.w / 2 + 0.17);
+      const inFace = alongX ? h.z + side.nz * (halfD - 0.17) : h.x + side.nx * (h.w / 2 - 0.17);
+      const wallMid = alongX ? h.z + side.nz * halfD : h.x + side.nx * (h.w / 2);
+      const nAxis = alongX ? side.nz : side.nx;
+      // 内外两道框：分别贴在墙外皮外 6cm、内皮内 6cm
+      for (const pos of [outFace + nAxis * 0.06, inFace + nAxis * 0.06]) {
+        if (alongX) {
+          addBox(winFrames, frameColor, cx - (winW / 2 + fw / 2), midY, pos, fw, winH + fw * 2, 0.07);
+          addBox(winFrames, frameColor, cx + (winW / 2 + fw / 2), midY, pos, fw, winH + fw * 2, 0.07);
+          addBox(winFrames, frameColor, cx, win.y1 + fw / 2, pos, winW + fw * 2, fw, 0.07);
+          addBox(winFrames, frameColor, cx, win.y0 - fw / 2, pos, winW + fw * 2, fw, 0.07);
         } else {
-          const xx = side.face + side.nx * off;
-          addBox(woods, frameColor, xx, cy, cz - winW / 2, fd, winH + 0.2, fw);
-          addBox(woods, frameColor, xx, cy, cz + winW / 2, fd, winH + 0.2, fw);
-          addBox(woods, frameColor, xx, cy + winH / 2, cz, fd, fw, winW + fw * 2);
-          addBox(woods, frameColor, xx, cy - winH / 2, cz, fd, fw, winW + fw * 2);
-          addBox(woods, 0xcfc8b8, xx, cy - winH / 2 - 0.05, cz - side.nx * 0.06, 0.22, 0.07, winW + 0.3);
+          addBox(winFrames, frameColor, pos, midY, cz - (winW / 2 + fw / 2), 0.07, winH + fw * 2, fw);
+          addBox(winFrames, frameColor, pos, midY, cz + (winW / 2 + fw / 2), 0.07, winH + fw * 2, fw);
+          addBox(winFrames, frameColor, pos, win.y1 + fw / 2, cz, 0.07, fw, winW + fw * 2);
+          addBox(winFrames, frameColor, pos, win.y0 - fw / 2, cz, 0.07, fw, winW + fw * 2);
         }
       }
+      // 窗洞侧壁贴脸（把 34cm 厚的墙洞包成“框”，不侵占净洞口）
+      const rev = 0.05, revU = winW / 2 + rev / 2;
+      if (alongX) {
+        addBox(winFrames, frameColor, cx - revU, midY, wallMid, rev, winH, wallT);
+        addBox(winFrames, frameColor, cx + revU, midY, wallMid, rev, winH, wallT);
+        addBox(winFrames, frameColor, cx, win.y1 + rev / 2, wallMid, winW + rev * 2, rev, wallT);
+        addBox(winFrames, frameColor, cx, win.y0 - rev / 2, wallMid, winW + rev * 2, rev, wallT);
+      } else {
+        addBox(winFrames, frameColor, wallMid, midY, cz - revU, wallT, winH, rev);
+        addBox(winFrames, frameColor, wallMid, midY, cz + revU, wallT, winH, rev);
+        addBox(winFrames, frameColor, wallMid, win.y1 + rev / 2, cz, wallT, rev, winW + rev * 2);
+        addBox(winFrames, frameColor, wallMid, win.y0 - rev / 2, cz, wallT, rev, winW + rev * 2);
+      }
+      // 窗台板：室外侧挑出 12cm + 室内侧窗台（都不伸进净洞口）
+      const sillColor = isBarn ? 0x7d6a52 : 0xcfc8b8;
+      const sillY = win.y0 - fw - 0.02;
+      if (alongX) {
+        addBox(woods, sillColor, cx, sillY, outFace + side.nz * 0.12, winW + 0.26, 0.07, 0.3);
+        addBox(woods, sillColor, cx, sillY, inFace - side.nz * 0.08, winW + 0.16, 0.05, 0.18);
+      } else {
+        addBox(woods, sillColor, outFace + side.nx * 0.12, sillY, cz, 0.3, 0.07, winW + 0.26);
+        addBox(woods, sillColor, inFace - side.nx * 0.08, sillY, cz, 0.18, 0.05, winW + 0.16);
+      }
     }
+    for (const g of winFrames) woods.push(g);
 
     // ---- 门框 + 半开的门扇 ----
     if (door) {
@@ -254,6 +354,13 @@ export function createBuildings({ preset, anisotropy = 1 } = {}) {
           addBox(woods, 0x7d6950, pcx + dirX * (porchD / 2 + 0.06), padH + 0.07, pcz, 0.3, 0.14, porchW * 0.7);
         }
       }
+    }
+
+    // ---- 家具：全部程序化几何，按房子合并进 furni 列表（全图只占 1 个 draw call）----
+    // 坐标/朝向来自 shared/world.js 的 FURNITURE（确定性随机），碰撞箱直接取 fw/fd。
+    for (const f of FURNITURE) {
+      if (f.house !== h.id) continue;
+      buildFurniture(furni, f);
     }
 
     // ---- 烟囱（木屋才有）----
@@ -420,14 +527,14 @@ export function createBuildings({ preset, anisotropy = 1 } = {}) {
   const woodMat = new THREE.MeshStandardMaterial({
     color: 0xffffff, vertexColors: true, roughness: 0.86, metalness: 0.02, dithering: true,
   });
-  const glassMat = new THREE.MeshStandardMaterial({
-    color: 0xffffff, vertexColors: true, roughness: 0.08, metalness: 0.15,
-    transparent: true, opacity: 0.55, envMapIntensity: 1.7, dithering: true,
+  // 家具材质（纯不透明，无玻璃）
+  const furniMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff, vertexColors: true, roughness: 0.82, metalness: 0.04, dithering: true,
   });
   const metalMat = new THREE.MeshStandardMaterial({
     color: 0xffffff, vertexColors: true, roughness: 0.55, metalness: 0.6, dithering: true,
   });
-  disposables.push(wallMat, roofMat, woodMat, glassMat, metalMat, roofNormal || null, sidingNormal || null);
+  disposables.push(wallMat, roofMat, woodMat, metalMat, furniMat, roofNormal || null, sidingNormal || null);
 
   // 屋顶法线平铺（合并后统一按世界 UV 无法做到，这里保持缺省 UV，仅作为细节）
   if (roofNormal) { roofNormal.repeat.set(3, 3); roofNormal.needsUpdate = true; }
@@ -435,16 +542,14 @@ export function createBuildings({ preset, anisotropy = 1 } = {}) {
   buildMerged(walls, wallMat, 'houseWalls');
   buildMerged(roofs, roofMat, 'houseRoofs');
   buildMerged(woods, woodMat, 'houseWood');
-  buildMerged(glasses, glassMat, 'houseGlass', { cast: false, receive: false, raycast: false });
+  buildMerged(furni, furniMat, 'houseFurniture');
   buildMerged(metals, metalMat, 'boundaryMetal');
 
   const fenceList = FENCES;
   const counts = { houses: HOUSES.length, fences: fenceList.length };
 
   function setQuality(next) {
-    const np = next || {};
-    const glassMesh = group.getObjectByName('houseGlass');
-    if (glassMesh) glassMesh.visible = np.glass !== false;
+    // 窗户无玻璃，玻璃网格已移除；质量档不再影响窗户可见性（窗洞始终通透）
   }
 
   function dispose() {

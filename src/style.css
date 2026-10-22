@@ -732,6 +732,159 @@ b { font-weight: 700; }
   gap: 6px;
   width: 480px;
 }
+
+/* ---------- 拆弹模式 HUD ---------- */
+#bombHud {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  margin-top: 6px;
+}
+#bombHud.hidden { display: none; }
+#bombRoundScores {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 12px;
+  background: rgba(16, 18, 12, 0.78);
+  border: 1px solid rgba(200, 178, 110, 0.28);
+  border-radius: 3px;
+  font-family: var(--sf-mono);
+  font-size: 12px;
+}
+#bombRoundScores .brs { display: flex; align-items: center; gap: 4px; }
+#bombRoundScores .brs b { font-size: 15px; font-weight: 700; }
+#bombRoundScores .brs.alpha b { color: #9ec6e8; }
+#bombRoundScores .brs.bravo b { color: #d09a82; }
+#bombRoundScores .brs i { width: 6px; height: 6px; border-radius: 50%; }
+#bombRoundScores .brs.alpha i { background: #6f9fc4; }
+#bombRoundScores .brs.bravo i { background: #c06a4e; }
+#bombRoundScores .brs-sep { color: var(--sf-faint); }
+#bombStatus {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 14px;
+  background: rgba(58, 16, 12, 0.86);
+  border: 1px solid rgba(214, 74, 52, 0.6);
+  border-radius: 3px;
+  font-family: var(--sf-mono);
+  font-size: 12px;
+  letter-spacing: 1px;
+  color: #f0c9b8;
+  animation: bombPulse 1s ease-in-out infinite;
+}
+#bombStatus.hidden { display: none; }
+#bombStatus #bombIcon { color: #ff6a4a; font-size: 14px; }
+#bombStatus #bombTimer { font-size: 15px; font-weight: 700; color: #ff8f6a; }
+@keyframes bombPulse {
+  0%, 100% { box-shadow: 0 0 0 rgba(214, 74, 52, 0); }
+  50% { box-shadow: 0 0 16px rgba(214, 74, 52, 0.5); }
+}
+#bombCarrier {
+  padding: 3px 12px;
+  background: rgba(58, 44, 12, 0.86);
+  border: 1px solid rgba(229, 200, 120, 0.55);
+  border-radius: 3px;
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  color: #f2e3ae;
+}
+#bombCarrier.hidden { display: none; }
+#bombCarrier b { color: #ffd98a; }
+
+/* 购买界面 */
+#buyMenu {
+  z-index: 31;
+  background: rgba(6, 8, 6, 0.72);
+  -webkit-backdrop-filter: blur(4px);
+  backdrop-filter: blur(4px);
+  pointer-events: auto;
+}
+.buy-card {
+  min-width: 620px;
+  padding: 18px 22px;
+  border-color: rgba(200, 178, 110, 0.4);
+}
+.buy-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+#buyCredits { font-size: 17px; font-weight: 700; color: #cfe0a8; letter-spacing: 1px; }
+#buyTimer { font-size: 12px; color: var(--sf-faint); }
+#buyList {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+.buy-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 11px;
+  background: rgba(24, 26, 18, 0.9);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s;
+}
+.buy-item:hover { border-color: rgba(229, 200, 120, 0.6); background: rgba(38, 40, 26, 0.95); }
+.buy-item.owned { border-color: rgba(150, 200, 120, 0.5); }
+.buy-item.cant { opacity: 0.45; cursor: not-allowed; }
+.buy-item .bi-key {
+  width: 20px; height: 20px;
+  display: grid; place-items: center;
+  background: rgba(255, 255, 255, 0.09);
+  border-radius: 2px;
+  font-family: var(--sf-mono);
+  font-size: 10px;
+  color: var(--sf-text);
+}
+.buy-item .bi-body { flex: 1; min-width: 0; }
+.buy-item .bi-name { font-size: 12px; color: var(--sf-text); letter-spacing: 0.4px; }
+.buy-item .bi-note { font-size: 10px; color: var(--sf-faint); margin-top: 2px; }
+.buy-item .bi-price {
+  font-family: var(--sf-mono);
+  font-size: 12px;
+  color: #cfe0a8;
+  white-space: nowrap;
+}
+.buy-item.cant .bi-price { color: #cf8b78; }
+
+/* 交互提示（安放/拆除/捡包） */
+#bombPrompt {
+  position: absolute;
+  left: 50%;
+  top: 58%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 16px;
+  z-index: 6;
+  background: rgba(12, 14, 9, 0.88);
+  border: 1px solid rgba(229, 200, 120, 0.5);
+  border-radius: 3px;
+  font-size: 12px;
+  letter-spacing: 0.6px;
+  color: #ece7d5;
+  pointer-events: none;
+}
+#bombPrompt.hidden { display: none; }
+#bombPrompt b {
+  display: grid; place-items: center;
+  width: 20px; height: 20px;
+  background: rgba(229, 200, 120, 0.9);
+  color: #1a1c14;
+  border-radius: 2px;
+  font-family: var(--sf-mono);
+  font-size: 11px;
+}
 .zone-chip {
   flex: 1;
   min-width: 0;
