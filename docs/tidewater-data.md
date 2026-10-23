@@ -79,8 +79,7 @@ bytes  payload           所有 buffer 顺序拼接
       "bounds": { "min": [x,y,z], "max": [x,y,z] }
     }
   ],
-  "rockProtos": [ { "style": 0, "lod": 0, "name": "rocks-boulder-near", "mesh": "rock0_near" } ],
-  "rockInstances": {
+  "rockProtos": [ { "style": 0, "lod": 0, "name": "rocks-boulder-near", "mesh": "rock0_near" } ],  "rockInstances": {
     "buffer": "rock_mtx", "type": "f32", "stride": 16, "count": 714,
     "styles": [ { "style": 0, "name": "boulder", "count": 227 }, ... ]
   },
@@ -95,6 +94,12 @@ bytes  payload           所有 buffer 顺序拼接
     { "name": "sand" }, { "name": "path" }, { "name": "gully" },
     { "name": "seagrass" }, { "name": "rubble" }, { "name": "scarp" }
   ],
+  // 远景整岛高度：8 m 网格，覆盖可玩窗口外侧（x ∈ [-560, 720]，z ∈ [-640, 640]），
+  // 渲染层用它铺窗口外的地形，避免 384 m 窗口边缘在山脊上出现断崖。
+  "island": {
+    "buffer": "island_h_i16", "type": "i16", "scale": 0.01,
+    "x0": -560, "z0": -640, "size": 1280, "texel": 8, "res": 161
+  },
   "shore": { ... }   // 可选：浅海深度场，暂不使用
 }
 ```

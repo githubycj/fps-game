@@ -140,6 +140,23 @@ class TidewaterGeo {
     for (let i = 0; i < out.length; i++) out[i] = buf.array[i] * scale;
     return out;
   }
+
+  /**
+   * 远景整岛高度（8 m 网格，覆盖可玩窗口外侧的整座岛）。
+   * @returns {{region:{x0:number,z0:number,size:number,texel:number,res:number}, heights:Float32Array}|null}
+   */
+  island() {
+    const spec = this.header.island;
+    if (!spec) return null;
+    const buf = viewBuffer(this.header, this._payload, spec.buffer);
+    const scale = spec.scale ?? 0.01;
+    const heights = new Float32Array(buf.count);
+    for (let i = 0; i < heights.length; i++) heights[i] = buf.array[i] * scale;
+    return {
+      region: { x0: spec.x0, z0: spec.z0, size: spec.size, texel: spec.texel, res: spec.res },
+      heights,
+    };
+  }
 }
 
 async function load() {

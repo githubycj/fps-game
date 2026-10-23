@@ -43,6 +43,11 @@ const log = (...a) => console.log(`[bake ${((Date.now() - t0) / 1000).toFixed(1)
 const REGION = { x0: -182, z0: -232, size: 384, texel: 1 };
 REGION.res = Math.round(REGION.size / REGION.texel) + 1; // 385 个采样点（含两端）
 
+// 远景整岛：可玩窗口之外用 8 m 网格覆盖整座岛（含北侧山脊），避免窗口边缘出现断崖。
+// 范围由 bake/probe-region.mjs 实测陆地包围盒决定（岛体一直延伸到 x≈±430、z≈-510）。
+const ISLAND = { x0: -560, z0: -640, size: 1280, texel: 8 };
+ISLAND.res = Math.round(ISLAND.size / ISLAND.texel) + 1; // 161 个采样点
+
 const HEIGHT_SCALE = 0.01; // int16 精度 1 cm，范围 ±327.67 m
 
 const mod = async (rel) => import(pathToFileUrl(path.join(VENDOR, rel)));
@@ -245,6 +250,16 @@ async function main() {
   for (const h of heights) { if (h < hmin) hmin = h; if (h > hmax) hmax = h; }
   log(`地形窗口完成：高度 ${hmin.toFixed(1)} … ${hmax.toFixed(1)} m`);
 
+  // ---- 5b. 远景整岛高度（8 m 网格，浏览器拼在窗口外侧）----
+  const islandHeights = new Float32Array(ISLAND.res * ISLAND.res);
+  for (let j = 0; j < ISLAND.res; j++) {
+    const z = ISLAND.z0 + j * ISLAND.texel;
+    for (let i = 0; i < ISLAND.res; i++) {
+      islandHeights[j * ISLAND.res + i] = terrain.heightAt(ISLAND.x0 + i * ISLAND.texel, z);
+    }
+  }
+  log(`远景整岛完成：${ISLAND.res}×${ISLAND.res} @ ${ISLAND.texel} m`);
+
   // ---- 6. 碰撞体 / 元数据 ----
   const colliderBoxes = colliders.boxes.map((b) => ({
     x: +b.center.x.toFixed(3), y: +b.center.y.toFixed(3), z: +b.center.z.toFixed(3),
@@ -377,6 +392,14 @@ async function main() {
   // 高度（浏览器端做顶点位移 / 快速采样）
   w.add('height_i16', 'i16', heightsI16);
   header.heights = { buffer: 'height_i16', type: 'i16', scale: HEIGHT_SCALE, res };
+
+  // 远景整岛高度（8 m 网格；渲染层用它铺窗口外的地形，避免断崖）
+  const islandI16 = quantizeI16(islandHeights, HEIGHT_SCALE);
+  w.add('island_h_i16', 'i16', islandI16);
+  header.island = {
+    buffer: 'island_h_i16', type: 'i16', scale: HEIGHT_SCALE,
+    x0: ISLAND.x0, z0: ISLAND.z0, size: ISLAND.size, texel: ISLAND.texel, res: ISLAND.res,
+  };
 
   const raw = w.build(header);
   const gz = zlib.gzipSync(raw, { level: 9 });
