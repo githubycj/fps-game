@@ -12,3 +12,7 @@ death_screen.png
 .tmp/
 .vite-cache/
 .dsh-ops-*.lock
+
+# 烘焙探针（临时调试脚本/上游源码副本，正式产物在 vendor/tidewater 与 data/tidewater）
+bake/
+.dsh-acl-reports/

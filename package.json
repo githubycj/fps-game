@@ -11,7 +11,9 @@
     "preview": "vite preview",
     "test": "node scripts/smoke.mjs",
     "test:world": "node scripts/validate-world.mjs",
-    "test:browser": "node scripts/browser-test.mjs"
+    "test:browser": "node scripts/browser-test.mjs",
+    "bake:tidewater": "node tools/bake-tidewater.mjs",
+    "bake:tidewater:terrain": "node tools/bake-tidewater.mjs --only=terrain"
   },
   "engines": {
     "node": ">=18"

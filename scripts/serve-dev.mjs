@@ -26,6 +26,8 @@ const MIME = {
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
   '.woff2': 'font/woff2',
+  '.gz': 'application/gzip',
+  '.bin': 'application/octet-stream',
   '.map': 'application/json',
 };
 
@@ -63,13 +65,24 @@ export async function startStaticServer(opts = {}) {
       });
       return;
     }
-    const file = path.normalize(path.join(ROOT, urlPath));
+    // 先按仓库根路径找；找不到再回退到 public/（对应 vite 的 publicDir 语义，
+    // 例如 /data/tidewater/geo.bin.gz 实际位于 public/data/tidewater/geo.bin.gz）。
+    const candidates = [path.normalize(path.join(ROOT, urlPath)), path.normalize(path.join(ROOT, 'public', urlPath))];
+    const file = candidates[0];
     if (!file.startsWith(ROOT)) { res.writeHead(403); res.end('Forbidden'); return; }
-    fs.readFile(file, (err, data) => {
-      if (err) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('Not found: ' + urlPath); return; }
-      res.writeHead(200, { 'Content-Type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream' });
-      res.end(data);
-    });
+    const tryRead = (i) => {
+      if (i >= candidates.length) {
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('Not found: ' + urlPath); return;
+      }
+      const target = candidates[i];
+      if (!target.startsWith(ROOT)) { tryRead(i + 1); return; }
+      fs.readFile(target, (err, data) => {
+        if (err) { tryRead(i + 1); return; }
+        res.writeHead(200, { 'Content-Type': MIME[path.extname(target).toLowerCase()] || 'application/octet-stream' });
+        res.end(data);
+      });
+    };
+    tryRead(0);
   });
 
   const wss = new WebSocketServer({ server, path: '/ws' });

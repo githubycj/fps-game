@@ -66,7 +66,8 @@ export default defineConfig({
     },
   },
   build: {
-    target: 'es2020',
+    // es2022：Tidewater 地图几何在 src/world/tidewater/load-geo.js 里用顶层 await 预加载。
+    target: 'es2022',
     chunkSizeWarningLimit: 1600,
   },
 });
