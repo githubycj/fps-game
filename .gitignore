@@ -16,3 +16,6 @@ death_screen.png
 # 烘焙探针（临时调试脚本/上游源码副本，正式产物在 vendor/tidewater 与 data/tidewater）
 bake/
 .dsh-acl-reports/
+
+# 截图脚本的输出（临时验证）
+screenshots/tidewater-verify/
