@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<title>terrain test</title>
+<style>html,body{margin:0;height:100%;background:#0b1016;overflow:hidden}canvas{display:block}</style>
+<script type="importmap">
+{ "imports": { "three": "/node_modules/three/build/three.module.js", "three/addons/": "/node_modules/three/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { createTerrain } from '/src/world/tidewater/terrain-baked.js';
+
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+renderer.setPixelRatio(1);
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xbcd6dd);
+scene.fog = new THREE.FogExp2(0xbcd6dd, 0.0016);
+
+const sun = new THREE.DirectionalLight(0xfff2dd, 2.6);
+sun.position.set(-260, 420, 180);
+scene.add(sun);
+const hemi = new THREE.HemisphereLight(0xbcd6dd, 0x8f8a6e, 1.1);
+scene.add(hemi);
+
+const q = new URLSearchParams(location.search).get('q') || 'low';
+const preset = { terrainSegments: q === 'low' ? 112 : q === 'medium' ? 128 : 144 };
+const terrain = createTerrain({ preset, anisotropy: 1, extras: {} });
+scene.add(terrain.group);
+
+const camera = new THREE.PerspectiveCamera(58, window.innerWidth / window.innerHeight, 0.1, 4000);
+window.__terrain = terrain;
+window.__scene = scene;
+window.__renderer = renderer;
+window.__camera = camera;
+window.__stats = () => ({ ...terrain.stats(), meshes: scene.children.length });
+window.__look = (px, py, pz, tx, ty, tz) => {
+  camera.position.set(px, py, pz);
+  camera.lookAt(tx, ty, tz);
+  renderer.render(scene, camera);
+  return true;
+};
+window.__ready = true;
+renderer.render(scene, camera);
+</script>
+</body>
+</html>

@@ -1,13 +1,16 @@
 # 潮汐湾 · TIDEWATER — 网页版 3D 死亡竞赛射击
 
-网页版 3D 多人射击游戏（**Vite + Three.js + Node.js/ws**，零外部资源、全程序化建模/贴图/音频）。
+网页版 3D 多人射击游戏（**Vite + Three.js + Node.js/ws**）。郊区战场是全程序化建模/贴图/音频；
+潮汐湾地图则**直接提取开源项目 [dgreenheck/tidewater](https://github.com/dgreenheck/tidewater)（MIT）的真实地图数据**，
+由本仓库的 headless 烘焙管线在 Node 里运行上游代码生成（见 [潮汐湾地图：直接提取上游](#潮汐湾地图直接提取上游不是重做)）。
 
 - **玩法：死亡竞赛（Deathmatch）** —— 限时 **8 分钟**内**击杀数（人头）最多的小队获胜**，支持 **2~4 支小队**混战，
   每支小队都有多个 AI 队友与 AI 敌人（"多 AI 小队"）。冲刺/蹲/滑铲、钢制插板、5 连杀 UAV 全部保留。
 - **地图：两张可选**
-  - **潮汐湾 TIDEWATER**（新，默认）—— 热带海岛渔村：白沙滩、珊瑚礁浅滩、长栈桥、吊脚渔屋、搁浅渔船。
-    参考 [dgreenheck/tidewater](https://github.com/dgreenheck/tidewater) 的空间布局与美术方向，用本项目
-    纯程序化管线重建为一张 **320×320** 的射击地图（不含任何外部资源）。
+  - **潮汐湾 TIDEWATER**（新，默认）—— 热带海岛渔村：白沙滩、珊瑚礁浅滩、长栈桥、吊脚渔屋、船屋、渔网与木桶道具。
+    地形高度/遮罩、村落与码头几何、岩石与植被布置全部由上游 dgreenheck/tidewater 的真实地图数据烘焙而来
+    （上游源码快照在 `vendor/tidewater/`，MIT；烘焙产物提交在 `shared/tidewater-baked.js` 与
+    `public/data/tidewater/geo.bin.gz`）。可玩区域约 320×330 m，使用上游世界坐标（米制，海平面 y=0）。
   - **郊区战场 SUBURBAN**（旧）—— 起伏草地、可进入民房、26m 输电塔与悬链电缆。
 
 > 旧的**拆弹玩法（Search & Destroy：炸弹 / 包点 / 回合 / 购买 / 经济 / 安包拆包）已彻底删除**。
@@ -21,6 +24,25 @@
 > 截图来自本机 headless Chrome（软件渲染 SwiftShader，中档画质；真实 GPU 上会开启 Bloom 与满密度草地）。
 > 潮汐湾：`screenshots/tidewater-menu.png`、`tidewater-village.png`、`tidewater-pier.png`、`tidewater-beach.png`、`tidewater-gameplay.png`。
 > 郊区战场：`screenshots/village.png`、`menu.png`、`hills.png`、`characters.png`、`scope.png`、`ads-ak47.png`、`smg-reddot.png`、`m416.png`、`deagle.png` 等。
+
+## 潮汐湾地图：直接提取上游（不是重做）
+
+潮汐湾的地形与建筑**不是本项目手工建模的**，而是把开源项目 [dgreenheck/tidewater](https://github.com/dgreenheck/tidewater)
+的真实地图数据（MIT）提取出来复用：
+
+- **上游源码快照**：`vendor/tidewater/` = 上游 `src/` + `LICENSE` + `CREDITS.md` + `README.md`
+  （commit `4811ba48d795197de5621985f404e765c0b7c0ef`，MIT）。上游 `public/`（54 MB 音频/GLB/云图）未引入。
+  为了在无 GPU 的 Node 里运行，只打了 3 处 `[DSH-PATCH]` 补丁（见 `vendor/tidewater/VENDOR.md`）。
+- **烘焙管线**：`node tools/bake-tidewater.mjs`（约 6 s）在 Node 里**直接运行上游代码**：
+  `TerrainData`（2048² 地形高度 + 岩石/沙滩/小径/沟壑/海草/碎石/陡坎遮罩）→ `Village`
+  （村落/栈桥/木栈道/道具的全部几何，以及 394 个盒 + 168 个柱碰撞体）→ `Rocks`（714 个岩石实例）
+  → `Scatter`（植被布置记录）。产物（都已提交）：
+  - `shared/tidewater-baked.js`：同构运行期数据（int16 高度图、碰撞体、村落元数据、出生点），Node 与浏览器共用
+  - `public/data/tidewater/geo.bin.gz`：量化几何容器（村庄 208,530 顶点、4 种岩石原型、植被实例、
+    7 张遮罩、1 m 近景高度 + 8 m 全岛远景高度）
+- **数据契约**：`docs/tidewater-data.md`（坐标系、容器格式、量化表、材质槽、上游语义）。
+- 本游戏只负责**渲染与玩法**：three.js 渲染、物理/命中、导航网格、AI 都消费上述烘焙数据；
+  郊区地图与本游戏的移动/武器/AI 代码完全不受影响。
 
 ## 快速开始
 

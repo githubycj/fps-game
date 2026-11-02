@@ -25,7 +25,8 @@ function readHeader(bytes) {
   const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
   if (magic !== 'TDW1') throw new Error('[tidewater] geo.bin.gz 魔数不正确：' + magic);
   const headerLen = dv.getUint32(4, true);
-  const headerOff = 12;
+  // 布局：magic(4B) + u32 headerLen(4B) + JSON header，JSON 从 offset 8 开始
+  const headerOff = 8;
   const header = JSON.parse(new TextDecoder().decode(bytes.subarray(headerOff, headerOff + headerLen)));
   return { header, payload: bytes.subarray(headerOff + headerLen) };
 }
